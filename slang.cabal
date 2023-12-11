@@ -13,7 +13,9 @@ executable slang
   hs-source-dirs:      src
   main-is:             Main.hs
   default-language:    Haskell2010
-  build-depends:       base >= 4.7 && < 5
+  build-depends:       base >= 4.7 && < 5,
+                       array
+                       
   ghc-options:         -Wall
                        -Wcompat
                        -Widentities
@@ -23,3 +25,5 @@ executable slang
                        -Wmissing-home-modules
                        -Wpartial-fields
                        -Wredundant-constraints
+  build-tool-depends: alex:alex
+  other-modules: Lexer

@@ -1,2 +1,8 @@
+module Main where
+
+import qualified Lexer
+
 main :: IO ()
-main = putStrLn "Hello, World!"
+main = do
+    s <- getContents
+    print $ Lexer.alexScanTokens s
