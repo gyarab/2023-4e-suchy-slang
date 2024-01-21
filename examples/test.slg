@@ -1,0 +1,83 @@
+
+stream range (int, int) -> int {
+    rcv (from, to);
+    let a: int = from;
+    while (a < to) send a++;
+}
+
+stream print int -> void {
+    rcv a;
+
+}
+
+stream words char -> string {
+    let word = "";
+    let curr = catch in;
+
+    while (curr != " " && curr != "\n") {
+        word += curr;
+    }
+
+    if (word.length > 0) {
+        word | out;
+    }
+}
+
+stream toCharArray string -> char {
+    let s = catch in;
+    for (int i = 0; i < string.length; i++)
+        s[i] | out;
+}
+
+stream constructInt char -> int {
+    let acc = 0;
+    while let digit = catch in {
+        acc *= 10;
+        acc += digit-asciioffset;
+    }
+    acc | out;
+}
+
+stream parseInt string -> int {
+    (catch in) | toCharArray | constructInt | out;
+}
+
+stream intToChars int -> char {
+    let n = catch in;
+
+    while (n > 0) {
+        n % 10 + asciioffset | out;
+    }
+    break;
+}
+
+stream charsToString char -> string {
+    let s = "";
+    while let c = catch in {
+        s += c;
+    }
+    s | out;
+}
+
+stream toString int -> string {
+    let i = catch in;
+
+    i | intToChars | charsToString | out;
+}
+
+stream doubler int -> int {
+    (catch in) * 2 | out;
+}
+
+stream main (int, string[]) -> int {
+    let (argc, argv) = catch in;
+
+    if (argc < 2) 1 | out;
+
+    let file = open(argv[1], "r");
+
+
+    file | words | parseInt | doubler | toString | stdoutln;
+
+    0 | out;
+}

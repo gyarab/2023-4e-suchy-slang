@@ -1,8 +1,10 @@
 module Main (main) where
 
 import qualified Lexer
+import Parser
 
 main :: IO ()
 main = do
     s <- getContents
-    print $ Lexer.alexScanTokens s
+    tok <- Lexer.alexScanTokens s
+    

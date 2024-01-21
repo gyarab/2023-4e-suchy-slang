@@ -1,5 +1,5 @@
 {
-module Lexer (alexScanTokens) where
+module Lexer (alexScanTokens, Token(..)) where
 }
 
 %wrapper "basic"
@@ -25,6 +25,7 @@ tokens :-
   
   \.                             { \s -> Dot }
   \,                             { \s -> Comma }
+  \:                             { \s -> Colon }
 
   \<                             { \s -> Lsr }
   \>                             { \s -> Gtr }
@@ -34,11 +35,14 @@ tokens :-
   \<=                            { \s -> Leq }
 
   &&                             { \s -> And }
-  \|\|                             { \s -> Or }
+  \|\|                           { \s -> Or }
 
   =                              { \s -> Assign }
 
-  [\-\+\*\/\%]                     { \s -> Operate (head s) }
+  \+\+                           { \s -> Incr }
+  \-\-                           { \s -> Decr }
+
+  [\-\+\*\/\%]                   { \s -> Operate (head s) }
 
   \|                             { \s -> Pipe }
   \;                             { \s -> Semicolon }
@@ -76,6 +80,7 @@ data Token
 
   | Dot
   | Comma
+  | Colon
 
   | Lsr
   | Gtr
@@ -88,6 +93,9 @@ data Token
   | Or
 
   | Assign
+
+  | Incr
+  | Decr
 
   | Operate Char
 
@@ -107,5 +115,5 @@ data Token
   | String String
 
   | Var String
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 }

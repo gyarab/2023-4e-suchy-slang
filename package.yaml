@@ -9,6 +9,7 @@ dependencies:
   - base >= 4.7 && < 5
   - array
   - containers
+  - megaparsec
 
 executable:
   source-dirs: src
