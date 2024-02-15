@@ -1,67 +1,73 @@
 {
-module Lexer (alexScanTokens, Token(..)) where
+module Lexer (alexScanTokens, Token(..), TWithRaw(..), pos, tok, raw, wspc, joinWhitespaceToks, AlexPosn(AlexPn)) where
+
 }
 
-%wrapper "basic"
+%wrapper "posn"
 
 $digit = 0-9            -- digits
 $alpha = [a-zA-Z]       -- alphabetic characters
 
 tokens :-
 
-  $white+                        ;
-  \#.*                           ;
-  let                            { \_ -> Let }
+  \n                             { lift NewLine }
+  $white+                        { \p s -> lift (White s) p s }
+  \#[^\n]*                       { \p s -> lift (Comment s) p s }
+  let                            { lift Let }
 
-  stream                         { \s -> Stream }
+  stream                         { lift Stream }
 
-  rcv                            { \s -> Rcv }
-  send                           { \s -> Send }
-  catch                          { \s -> Catch }
+  rcv                            { lift Rcv }
+  send                           { lift Send }
+  catch                          { lift Catch }
 
-  if                             { \s -> If }
-  while                          { \s -> While }
-  for                            { \s -> For }
+  if                             { lift If }
+  while                          { lift While }
+  for                            { lift For }
   
-  \.                             { \s -> Dot }
-  \,                             { \s -> Comma }
-  \:                             { \s -> Colon }
+  $digit+                        { \p s -> lift (Int (read s)) p s }
+  $digit+\.$digit+               { \p s -> lift (Float (read s)) p s }
 
-  \<                             { \s -> Lsr }
-  \>                             { \s -> Gtr }
-  ==                             { \s -> Eq }
-  !=                             { \s -> Neq }
-  \>=                            { \s -> Geq }
-  \<=                            { \s -> Leq }
+  \.                             { lift Dot }
+  \,                             { lift Comma }
+  \:                             { lift Colon }
 
-  &&                             { \s -> And }
-  \|\|                           { \s -> Or }
+  \<                             { lift Lsr }
+  \>                             { lift Gtr }
+  ==                             { lift Eq }
+  !=                             { lift Neq }
+  \>=                            { lift Geq }
+  \<=                            { lift Leq }
 
-  =                              { \s -> Assign }
+  &&                             { lift And }
+  \|\|                           { lift Or }
 
-  \+\+                           { \s -> Incr }
-  \-\-                           { \s -> Decr }
+  =                              { lift Assign }
 
-  [\-\+\*\/\%]                   { \s -> Operate (head s) }
+  \+\+                           { lift Incr }
+  \-\-                           { lift Decr }
 
-  \|                             { \s -> Pipe }
-  \;                             { \s -> Semicolon }
+  [\-\+\*\/\%]                   { \p s -> lift (Operate (head s)) p s }
 
-  \(                             { \s -> LParen }
-  \)                             { \s -> RParen }
-  \{                             { \s -> LBracket }
-  \}                             { \s -> RBracket }
-  \[                             { \s -> RBrace }
-  \]                             { \s -> RBrace }
+  \|                             { lift Pipe }
+  \;                             { lift Semicolon }
 
-  \-\>                           { \s -> Arrow }
+  \(                             { lift LParen }
+  \)                             { lift RParen }
+  \{                             { lift LBracket }
+  \}                             { lift RBracket }
+  \[                             { lift RBrace }
+  \]                             { lift RBrace }
 
-  $digit+                        { \s -> Int (read s) }
-  \" ($printable # \")* \"       { \s -> String $ (init . tail) s }
+  \-\>                           { lift Arrow }
 
-  $alpha [$alpha $digit \_ \']*  { \s -> Var s }
+  \" ($printable # \")* \"       { \p s -> lift (String $ (init . tail) s) p s }
+
+  $alpha [$alpha $digit \_ \']*  { \p s -> lift (Name s) p s }
 
 {
+lift = TWithRaw ""
+
 -- Each action has type :: String -> Token
 
 -- The token type:
@@ -77,6 +83,9 @@ data Token
   | If
   | While
   | For
+
+  | Int Int
+  | Float Float
 
   | Dot
   | Comma
@@ -111,9 +120,43 @@ data Token
 
   | Arrow
 
-  | Int Int
   | String String
 
-  | Var String
+  | Name String
+
+  | NewLine
+  | White String
+  | Comment String
   deriving (Eq, Ord, Show)
+
+
+data TWithRaw = TWithRaw {
+  wspc :: String,
+  tok :: Token,
+  pos :: AlexPosn,
+  raw :: String
+} deriving (Eq, Ord, Show)
+
+isJoinable :: Token -> Bool
+isJoinable NewLine = True
+isJoinable (White _) = True
+isJoinable (Comment _) = True
+isJoinable _ = False
+
+isTokenJoinable :: TWithRaw -> Bool
+isTokenJoinable t = isJoinable (tok t)
+
+joinIfJoinable :: [TWithRaw] -> TWithRaw -> [TWithRaw]
+joinIfJoinable (prev:tokens) new =
+  if isTokenJoinable prev
+    then (newTokWith (raw prev)):tokens
+    else new:prev:tokens
+  where
+    newTokWith s = TWithRaw (s ++ (wspc new)) (tok new) (pos new) (raw new)
+    
+joinIfJoinable [] new = [new]
+
+joinWhitespaceToks :: [TWithRaw] -> [TWithRaw]
+joinWhitespaceToks = reverse . dropWhile isTokenJoinable . foldl joinIfJoinable []
+      
 }
