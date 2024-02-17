@@ -1,85 +1,76 @@
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TypeFamilies      #-}
-{-# LANGUAGE RecordWildCards #-}
-
 module Parser where
 
+import Common
 import Text.Megaparsec
-import qualified Lexer
-import Data.List.NonEmpty (NonEmpty (..))
-import Data.Proxy
+import qualified Text.Megaparsec.Char.Lexer as L
+import Text.Megaparsec.Char (space1, string, alphaNumChar, letterChar)
 import Data.Void
-import qualified Data.List          as DL
-import qualified Data.List.NonEmpty as NE
-import qualified Data.Set           as Set
+import Control.Monad
+import qualified Lexer as L
+import Lexer (pToken, pIdentifier)
+import Control.Monad.Combinators.Expr
 
-type TokStream = [Lexer.TWithRaw]
-instance VisualStream TokStream where
-  showTokens Proxy toks = Lexer.raw frst ++ restStr
+data ASTNode
+  = Declare {
+      identifier :: !String,
+      iType :: !String,
+      value :: !(Maybe ASTNode)
+    }
+  | Negate !ASTNode
+  | Add !ASTNode !ASTNode
+  | Subtract !ASTNode !ASTNode
+  | Multiply !ASTNode !ASTNode
+  | Divide !ASTNode !ASTNode
+  | ConstInt !Int
+  | ConstString !String
+  | ConstChar !Char
+  | ConstFloat !Float
+  | Identifier ![String]
+  | Call !ASTNode
+  deriving (Eq, Ord, Show)
+
+
+pLetStatement :: Parser ASTNode
+pLetStatement = do
+  void $ pToken L.Let
+
+  L.Identifier ident <- pIdentifier
+
+  void $ pToken L.Colon
+
+  L.Identifier iType <- pIdentifier <?> "type"
+
+  ex <- optional . try $ (void (pToken L.Assign) *> pExpression)
+
+  void $ pToken L.Semicolon
+  return (Declare ident iType ex)
+
+wordsWhen :: (Char -> Bool) -> String -> [String]
+wordsWhen p s = case dropWhile p s of
+  "" -> []
+  s' -> w : wordsWhen p s''
     where
-      (frst:rest) = NE.toList toks
-      restStr = concatMap (\t -> Lexer.wspc t ++ Lexer.raw t) rest
-  tokensLength p toks = length (showTokens p toks)
+      (w, s'') = break p s'
 
-instance TraversableStream TokStream where
-  reachOffset o PosState {..} =
-    ( Just (prefix ++ restOfLine)
-    , PosState
-        { pstateInput = restStream
-        , pstateOffset = max pstateOffset o
-        , pstateSourcePos = newSourcePos
-        , pstateTabWidth = pstateTabWidth
-        , pstateLinePrefix = prefix
-        }
-    )
-    where
-      (consumedStream, restStream) = splitAt (o - pstateOffset) pstateInput
+pTerm = 
+  L.pParens pExpression
+  <|> Identifier . wordsWhen (=='.') . L.unIdentifier <$> L.pIdentifier
+  <|> ConstInt . L.unInteger <$> L.pInteger
+  <|> ConstString . L.unString <$> L.pString
+  <|> ConstChar . L.unChar <$> L.pChar
 
-      -- 
-      prefix =
-        if sameLine
-          then pstateLinePrefix ++ preLine
-          else preLine
+table = [
+  [
+    Prefix (Negate <$ pToken L.Sub) -- negate the term
+  ],
+  [
+    InfixL (Multiply <$ pToken L.Mult),
+    InfixL (Divide <$ pToken L.Div)
+  ],
+  [
+    InfixL (Add <$ pToken L.Add),
+    InfixL (Subtract <$ pToken L.Sub)
+  ]
+ ]
 
-      sameLine = sourceLine newSourcePos == sourceLine pstateSourcePos
-
-      newSourcePos =
-        case restStream of
-          [] -> case pstateInput of
-            [] -> pstateSourcePos
-            xs -> updateSourcePosTk pstateSourcePos (last xs)
-          (x:_) -> updateSourcePosTk pstateSourcePos x
-
-      -- formatted line up until the current token (it could be missing a part
-      preLine =
-        if not (null onPrevLines)
-          then let (newLineTok:_) = onPrevLines in (reverse . takeWhile (/= 'n') . reverse . Lexer.wspc $ newLineTok) ++ Lexer.raw newLineTok ++ lineWithoutFirstTok
-          else lineWithoutFirstTok
-        where
-          lineWithoutFirstTok = concatMap (\t -> Lexer.wspc t ++ Lexer.raw t) (reverse onThisLine)
-          (onThisLine, onPrevLines) = break (\t -> "\n" `DL.isInfixOf` Lexer.wspc t) . reverse $ consumedStream
-
-      restOfTokensOnLine = takeWhile (\t -> not ("\n" `DL.isInfixOf` Lexer.wspc t)) restStream
-      restOfLine = concatMap (\t -> Lexer.wspc t ++ Lexer.raw t) restOfTokensOnLine
-
-updateSourcePos (SourcePos fn _ _) (Lexer.AlexPn _ l c) = SourcePos fn (mkPos l) (mkPos c)
-updateSourcePosTk sp tk = updateSourcePos sp (Lexer.pos tk)
-
-type Parser = Parsec Void TokStream
-
-
-pToken :: Lexer.Token -> Parser Lexer.Token
-pToken c = token test (Set.singleton . Tokens . nes . liftMyToken $ c)
-  where
-    test (Lexer.TWithRaw _ x _ _) =
-      if x == c
-        then Just x
-        else Nothing
-    nes x = x :| []
-
-pLet :: Parser Bool
-pLet = do
-  single Lexer.Let
-  return True
+pExpression = makeExprParser pTerm table

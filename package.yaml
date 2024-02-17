@@ -10,10 +10,8 @@ dependencies:
   - array
   - containers
   - megaparsec
+  - parser-combinators
 
 executable:
   source-dirs: src
   main: Main.main
-  build-tools:
-    - alex:alex
-  generated-other-modules: Lexer

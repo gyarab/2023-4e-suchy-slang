@@ -1,4 +1,4 @@
-cabal-version: 2.0
+cabal-version: 1.12
 
 -- This file has been generated from package.yaml by hpack version 0.35.1.
 --
@@ -16,20 +16,17 @@ build-type:     Simple
 executable slang
   main-is: Main.hs
   other-modules:
+      Common
+      Lexer
       Parser
       Paths_slang
-      Lexer
-  autogen-modules:
-      Paths_slang
-      Lexer
   hs-source-dirs:
       src
   ghc-options: -main-is Main.main
-  build-tools:
-      alex
   build-depends:
       array
     , base >=4.7 && <5
     , containers
     , megaparsec
+    , parser-combinators
   default-language: Haskell2010
