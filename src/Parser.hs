@@ -26,9 +26,19 @@ data ASTNode
   | ConstChar !Char
   | ConstFloat !Float
   | Identifier ![String]
-  | Call !ASTNode
+  | Call ![ASTNode] !ASTNode
+  | IfElse !ASTNode ![ASTNode] !(Maybe [ASTNode])
   deriving (Eq, Ord, Show)
 
+pBlock :: Parser [ASTNode]
+pBlock = L.pBraces $ many pStatement
+
+pStatement :: Parser ASTNode
+pStatement = choice [
+    pLetStatement,
+    pIfElseStatement,
+    pExpression <* pToken L.Semicolon
+  ]
 
 pLetStatement :: Parser ASTNode
 pLetStatement = do
@@ -43,7 +53,24 @@ pLetStatement = do
   ex <- optional . try $ (void (pToken L.Assign) *> pExpression)
 
   void $ pToken L.Semicolon
+
   return (Declare ident iType ex)
+
+pIfElseStatement :: Parser ASTNode
+pIfElseStatement = do
+  void $ pToken L.If
+
+  condition <- pExpression
+
+  action <- pBlock <|> ((:[]) <$> pStatement)
+
+  elseAction <- optional . try $ do
+    void $ pToken L.Else
+    pBlock <|> ((:[]) <$> pStatement)
+
+  return (IfElse condition action elseAction)
+    
+
 
 wordsWhen :: (Char -> Bool) -> String -> [String]
 wordsWhen p s = case dropWhile p s of
@@ -51,6 +78,17 @@ wordsWhen p s = case dropWhile p s of
   s' -> w : wordsWhen p s''
     where
       (w, s'') = break p s'
+
+pArguments :: Parser [ASTNode]
+pArguments = L.pParens $ do
+  exp <- optional . try $ pExpression
+  moreExprs <- nextExpr
+  return $ case exp of
+            Just e -> e:moreExprs
+            Nothing -> moreExprs
+  where
+    nextExpr = many $ try (pToken L.Comma *> pExpression)
+
 
 pTerm = 
   L.pParens pExpression
@@ -60,6 +98,9 @@ pTerm =
   <|> ConstChar . L.unChar <$> L.pChar
 
 table = [
+  [
+    Postfix (Call <$> pArguments)
+  ],
   [
     Prefix (Negate <$ pToken L.Sub) -- negate the term
   ],

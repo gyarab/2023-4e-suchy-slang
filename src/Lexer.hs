@@ -2,6 +2,7 @@ module Lexer (
   LToken(..),
   pToken,
   pParens,
+  pBraces,
   pBrackets,
   pInteger,
   unInteger,
@@ -30,6 +31,7 @@ data LToken
   | Catch
 
   | If
+  | Else
   | While
   | For
 
@@ -112,6 +114,7 @@ pToken Stream = Stream <$ symbol "stream"
 pToken Catch = Catch <$ symbol "catch"
 
 pToken If = If <$ symbol "if"
+pToken Else = Else <$ symbol "else"
 pToken While = While <$ symbol "while"
 pToken For = For <$ symbol "for"
 pToken Dot = Dot <$ symbol "."
@@ -145,7 +148,7 @@ pToken Arrow = Arrow <$ symbol "->"
 
 
 pParens    = between (symbol "(") (symbol ")")
-pPraces    = between (symbol "{") (symbol "}")
+pBraces    = between (symbol "{") (symbol "}")
 pBrackets  = between (symbol "[") (symbol "]")
 
 
