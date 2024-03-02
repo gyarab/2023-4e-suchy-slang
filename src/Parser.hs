@@ -1,4 +1,4 @@
-module Parser where
+module Parser (pModule) where
 
 import Common
 import Text.Megaparsec
@@ -28,7 +28,46 @@ data ASTNode
   | Identifier ![String]
   | Call ![ASTNode] !ASTNode
   | IfElse !ASTNode ![ASTNode] !(Maybe [ASTNode])
+  | Stream {
+      name :: !String,
+      arugments :: ![String], -- (name, type)
+      retVal :: !String,
+      body :: ![ASTNode]
+    }
   deriving (Eq, Ord, Show)
+
+pModule :: Parser [ASTNode]
+pModule = many pStream
+
+pStream :: Parser ASTNode
+pStream = do
+  void $ pToken L.Stream
+
+  name <- L.unIdentifier <$> pIdentifier
+
+  args <- pArguments
+
+  void $ pToken L.Arrow
+
+  retType <- L.unIdentifier <$> pIdentifier
+
+  Stream name args retType <$> pBlock
+
+  where
+    pArgument :: Parser String
+    pArgument = L.unIdentifier <$> pIdentifier
+
+    pArguments :: Parser [String]
+    pArguments = L.pParens $ do
+      exp <- optional . try $ pArgument
+      moreExprs <- nextArg
+      return $ case exp of
+                Just e -> e:moreExprs
+                Nothing -> moreExprs
+
+    nextArg = many $ try (pToken L.Comma *> pArgument)
+
+
 
 pBlock :: Parser [ASTNode]
 pBlock = L.pBraces $ many pStatement
@@ -69,7 +108,6 @@ pIfElseStatement = do
     pBlock <|> ((:[]) <$> pStatement)
 
   return (IfElse condition action elseAction)
-    
 
 
 wordsWhen :: (Char -> Bool) -> String -> [String]
@@ -90,7 +128,7 @@ pArguments = L.pParens $ do
     nextExpr = many $ try (pToken L.Comma *> pExpression)
 
 
-pTerm = 
+pTerm =
   L.pParens pExpression
   <|> Identifier . wordsWhen (=='.') . L.unIdentifier <$> L.pIdentifier
   <|> ConstInt . L.unInteger <$> L.pInteger

@@ -16,6 +16,7 @@ build-type:     Simple
 executable slang
   main-is: Main.hs
   other-modules:
+      Codegen
       Common
       Lexer
       Parser

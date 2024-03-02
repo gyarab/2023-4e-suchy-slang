@@ -1,0 +1,3 @@
+stream main () -> int {
+    print("Whas good homies!"); // Hello world! in youngster english
+}

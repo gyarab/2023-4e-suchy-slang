@@ -1,13 +1,10 @@
-
-stream range (int, int) -> int {
-    rcv (from, to);
-    let a: int = from;
-    while (a < to) send a++;
+stream print (int) -> void {
+    catch in;
 }
 
-stream print int -> void {
-    rcv a;
-
+stream range (int, int) -> int {
+    let a: int = catch in;
+    while (a < to) a++ | out;
 }
 
 stream words char -> string {
