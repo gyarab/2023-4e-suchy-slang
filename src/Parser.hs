@@ -1,4 +1,4 @@
-module Parser (pModule) where
+module Parser (pModule, ASTNode(..)) where
 
 import Common
 import Text.Megaparsec
@@ -26,7 +26,7 @@ data ASTNode
   | ConstChar !Char
   | ConstFloat !Float
   | Identifier ![String]
-  | Call ![ASTNode] !ASTNode
+  | Call ![ASTNode] !ASTNode -- args, name
   | IfElse !ASTNode ![ASTNode] !(Maybe [ASTNode])
   | Stream {
       name :: !String,
