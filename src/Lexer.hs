@@ -1,5 +1,6 @@
 module Lexer (
   LToken(..),
+  pType,
   pToken,
   pParens,
   pBraces,
@@ -7,6 +8,8 @@ module Lexer (
   pInteger,
   unInteger,
   pIdentifier,
+  pIdentifierSingle,
+  pIdentifierName,
   unIdentifier,
   pString,
   unString,
@@ -17,14 +20,17 @@ module Lexer (
 import Common
 import Text.Megaparsec
 import qualified Text.Megaparsec.Char.Lexer as L
-import Text.Megaparsec.Char (space1, string, alphaNumChar, letterChar, asciiChar)
+import Text.Megaparsec.Char (space1, string, alphaNumChar, letterChar, asciiChar, char)
 import Data.Void
 import Control.Monad
+import qualified Types as T
 
 data LToken
   = Let
 
   | Stream
+  | Function -- external functions
+  | Struct
 
   | Rcv
   | Send
@@ -35,7 +41,7 @@ data LToken
   | While
   | For
 
-  | ContInt !Int
+  | ConstInt !Int
   | ConstFloat !Float
   | ConstChar !Char
   | ConstString !String
@@ -71,7 +77,14 @@ data LToken
 
   | Arrow
 
-  | Identifier !String
+  | Ellipsis
+
+  | Extern
+
+  | Deref
+  | Ref
+
+  | Identifier ![String]
 
   deriving (Eq, Ord, Show)
 
@@ -84,32 +97,28 @@ symbol = lexeme . string
 
 
 pInteger :: Parser LToken
-pInteger = ContInt <$> L.signed space (lexeme L.decimal)
+pInteger = ConstInt <$> L.signed space (lexeme L.decimal)
 
-unInteger (ContInt i) = i
+unInteger (ConstInt i) = i
 
 
--- XXX: could probably use between here
 pString :: Parser LToken
-pString = do -- ok if we don't backtrack, a " always starts a string, nothing else
-  void $ single '"'
-  s <- takeWhileP Nothing (/= '"')
-  void $ single '"'
-  return $ ConstString s
+pString = lexeme $ char '"' >> ConstString <$> manyTill L.charLiteral (char '"')
 
 unString (ConstString s) = s
 
 
 pChar :: Parser LToken
-pChar = ConstChar <$> between (single '\'') (single '\'') asciiChar
+pChar = lexeme $ ConstChar <$> between (single '\'') (single '\'') L.charLiteral
 
 unChar (ConstChar c) = c
-
 
 pToken :: LToken -> Parser LToken
 pToken Let = Let <$ symbol "let"
 
 pToken Stream = Stream <$ symbol "stream"
+pToken Function = Stream <$ symbol "fn"
+pToken Struct = Struct <$ symbol "struct"
 
 pToken Catch = Catch <$ symbol "catch"
 
@@ -146,18 +155,39 @@ pToken Div = Div <$ symbol "/"
 
 pToken Arrow = Arrow <$ symbol "->"
 
+pToken Ellipsis = Ellipsis <$ symbol "..."
+
+pToken Extern = Extern <$ symbol "extern"
+
+-- !! same as Mult, we will have to guess from context
+pToken Deref = Deref <$ symbol "*"
+pToken Ref = Ref <$ symbol "&"
+
+pType :: Parser T.Type
+pType = lexeme $ choice
+  [ T.Boolean <$ symbol "bool"
+  , T.I64 <$ symbol "i64"
+  , T.I32 <$ symbol "i32"
+  , T.Char <$ symbol "char"
+  ]
 
 pParens    = between (symbol "(") (symbol ")")
 pBraces    = between (symbol "{") (symbol "}")
 pBrackets  = between (symbol "[") (symbol "]")
 
 
+pIdentifierName :: Parser String
+pIdentifierName = (:) <$> letterChar <*> many alphaNumChar <?> "identifier"
+
+pIdentifierSingle :: Parser String
+pIdentifierSingle = lexeme pIdentifierName
+
 pIdentifier :: Parser LToken
 pIdentifier = Identifier <$> try (lexeme ident)
   where
     ident = do
-      c <- letterChar
-      rest <- many (alphaNumChar <|> single '.')
-      return (c:rest)
+      c <- pIdentifierName
+      rest <- many (single '.' *> pIdentifierName)
+      return $ c:rest
 
 unIdentifier (Identifier i) = i

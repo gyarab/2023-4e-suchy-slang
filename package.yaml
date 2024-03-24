@@ -12,6 +12,7 @@ dependencies:
   - megaparsec
   - parser-combinators
   - text
+  - mtl
 
 executable:
   source-dirs: src
