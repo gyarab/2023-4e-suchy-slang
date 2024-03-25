@@ -10,6 +10,7 @@ data Type
   | Ellipsis -- only used for extern functions
   | Pointer !Type
   | StructureStub !String -- structure data stored separately
+  | Void
   deriving (Show, Eq, Ord)
 
 data TypedObject
@@ -29,6 +30,7 @@ deref _ = Nothing
 llvmType I64 = "i64"
 llvmType I32 = "i32"
 llvmType Char = "i8"
-llvmType Boolean = "i8" -- :)
+llvmType Boolean = "i1" -- :)
 llvmType Ellipsis = "..."
+llvmType Void = "void"
 llvmType (Pointer _) = "ptr"

@@ -11,7 +11,7 @@ import qualified Types
 
 import qualified Data.Map as Map
 import Data.Map(Map)
-import Data.Maybe (isNothing)
+import Data.Maybe (isNothing, isJust)
 
 data Module = Module {
    constants :: ![(String, String)],
@@ -21,7 +21,7 @@ data Module = Module {
 
 type TypeMap = Map String Types.TypedObject
 
-data Assembled = Inline !Int | Referenced !Int | Global !String
+data Assembled = Inline !Int | Referenced !Int | Global !String | Dummy
   deriving (Eq)
 
 type TAssembled = (Types.Type, Assembled)
@@ -34,8 +34,10 @@ instance Show Assembled where
   show (Inline i) = show i
   show (Referenced i) = '%':show i
   show (Global s) = '@':s
+  show Dummy = "USED DUMMY SOMEWHERE. NICHT GOOD"
 
 data AssemblerState = AssemblerState {
+    labelN :: !Int,
     num :: !Int,
     global :: !Int,
     assembly :: ![T.Text],
@@ -84,6 +86,9 @@ forceSameType :: Types.Type -> Types.Type -> AsState ()
 forceSameType tl tr =
   lift $ if tl == tr then Right () else Left $ show tl ++ " and " ++ show tr ++ " must be of the same type"
 
+replaceType :: Types.Type -> TAssembled -> TAssembled
+replaceType t (_, a) = (t, a)
+
 fArgs args = if not (null args) then (llvmType . head) args ++ concatMap ((", "++) . llvmType) (tail args) else ""
 concatWith delim args = if not (null args) then head args ++ concatMap (delim++) (tail args) else ""
 
@@ -108,6 +113,13 @@ assemble (P.Add l r) = assembleBinaryOp "add" l r
 assemble (P.Subtract l r) = assembleBinaryOp "sub" l r
 assemble (P.Multiply l r) = assembleBinaryOp "mul" l r
 assemble (P.Divide l r) = assembleBinaryOp "sdiv" l r
+
+assemble (P.Eq l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp eq" l r
+assemble (P.Neq l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp neq" l r
+assemble (P.Geq l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp sge" l r
+assemble (P.Leq l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp sle" l r
+assemble (P.Gtr l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp sgt" l r
+assemble (P.Lsr l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp slt" l r
 
 assemble (P.Call args func) = do
   aargs <- mapM assemble args
@@ -187,12 +199,58 @@ assemble (P.Assign (P.Identifier (var:_)) val) = do
   where
     store typ ass ptr = T.pack ("store " ++ llvmType typ ++ " " ++ show ass ++ ", ptr " ++ show ptr)
 
+assemble (P.IfElse cond a b) = do
+  (tcond, ascond) <- assemble cond
 
-assembleBody :: [P.ASTNode] -> AsState TAssembled
-assembleBody stmts = do
+  forceSameType Types.Boolean tcond <?> "condition of if statement must be of type Boolean"
+
+  modify (incrLabel . incrLabel . incrLabel)
+
+  label <- gets labelN
+
+  modify $ addAssembly (T.pack ("br i1 " ++ show ascond ++ ", label %lbl" ++ show (label - 2) ++ ", label %lbl" ++ if isJust b then show (label - 1) else show label))
+  modify $ addAssembly (T.pack ("lbl" ++ show (label - 2) ++ ":"))
+
+  assembleBlock a
+
+  modify $ addAssembly (T.pack ("br label %lbl" ++ show label))
+
+  when (isJust b) $ do
+    let (Just c) = b
+    modify $ addAssembly (T.pack ("lbl" ++ show (label - 1) ++ ":"))
+    assembleBlock c
+    modify $ addAssembly (T.pack ("br label %lbl" ++ show label))
+
+  modify $ addAssembly (T.pack ("lbl" ++ show label ++ ":"))
+
+  return (Types.Void, Dummy)
+
+assemble (P.While cond loop) = do
+  modify (incrLabel . incrLabel . incrLabel)
+
+  label <- gets labelN
+
+  modify $ addAssembly (T.pack ("br label %lbl" ++ show (label - 2)))
+  modify $ addAssembly (T.pack ("lbl" ++ show (label - 2) ++ ":"))
+
+  (tcond, ascond) <- assemble cond
+  forceSameType Types.Boolean tcond <?> "condition of while statement must be of type Boolean"
+
+  modify $ addAssembly (T.pack ("br i1 " ++ show ascond ++ ", label %lbl" ++ show (label - 1) ++ ", label %lbl" ++ show label))
+  modify $ addAssembly (T.pack ("lbl" ++ show (label - 1) ++ ":"))
+  assembleBlock loop
+  modify $ addAssembly (T.pack ("br label %lbl" ++ show (label - 2)))
+  modify $ addAssembly (T.pack ("lbl" ++ show label ++ ":"))
+
+  return (Types.Void, Dummy)
+  
+
+assembleBlock :: [P.ASTNode] -> AsState TAssembled
+assembleBlock stmts = do
+  locals <- gets locals
   assembled <- mapM assemble stmts
+  modify $ setLocals locals -- exit block (throw away local vars)
   return $ last assembled
-
 
 assembleBinaryOp :: String -> P.ASTNode -> P.ASTNode -> AsState TAssembled
 assembleBinaryOp instr left right = do
@@ -211,13 +269,15 @@ assembleBinaryOp instr left right = do
   where
     mk n l r t = T.pack (show n ++ " = " ++ instr ++ " " ++ llvmType t ++ " " ++ show l ++ ", " ++ show r)
 
-addDeclaration dec (AssemblerState n g a d t l) = AssemblerState n g a (d++[dec]) t l
-incrNum (AssemblerState n g a d t l) = AssemblerState (n+1) g a d t l
-incrGlobal (AssemblerState n g a d t l) = AssemblerState n (g+1) a d t l
-addAssembly ass (AssemblerState n g a d t l) = AssemblerState n g (a++[ass]) d t l
-setVariable name typ ref (AssemblerState n g a d t l) = AssemblerState n g a d (Map.insert name (Types.Variable typ) t) (Map.insert name ref l)
+addDeclaration dec (AssemblerState ln n g a d t l) = AssemblerState ln n g a (d++[dec]) t l
+incrNum (AssemblerState ln n g a d t l) = AssemblerState ln (n+1) g a d t l
+incrLabel (AssemblerState ln n g a d t l) = AssemblerState (ln+1) n g a d t l
+incrGlobal (AssemblerState ln n g a d t l) = AssemblerState ln n (g+1) a d t l
+addAssembly ass (AssemblerState ln n g a d t l) = AssemblerState ln n g (a++[ass]) d t l
+setVariable name typ ref (AssemblerState ln n g a d t l) = AssemblerState ln n g a d (Map.insert name (Types.Variable typ) t) (Map.insert name ref l)
+setLocals locals (AssemblerState ln n g a d t l) = AssemblerState ln n g a d t locals
 
-assemblerStateEmpty t = AssemblerState 0 0 [] [] t Map.empty
+assemblerStateEmpty t = AssemblerState 0 0 0 [] [] t Map.empty
 
 testAssembleModule :: TypeMap -> [P.ASTNode] -> Either String T.Text
 testAssembleModule types streams = do
@@ -226,7 +286,7 @@ testAssembleModule types streams = do
 
 assembleStream :: TypeMap -> P.ASTNode -> Either String T.Text
 assembleStream types (P.Stream name args rv (Just body)) = do
-  (_, as) <- runStateT (assembleBody body) (assemblerStateEmpty types)
+  (_, as) <- runStateT (assembleBlock body) (assemblerStateEmpty types)
   return $ T.unlines [
       T.unlines (declarations as),
       T.pack ("define " ++ llvmType rv ++ " @" ++ name ++ "(" ++ fArgs args ++ ") noinline optnone {"),

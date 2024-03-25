@@ -24,6 +24,12 @@ data ASTNode
   | Subtract !ASTNode !ASTNode
   | Multiply !ASTNode !ASTNode
   | Divide !ASTNode !ASTNode
+  | Lsr !ASTNode !ASTNode
+  | Gtr !ASTNode !ASTNode
+  | Eq !ASTNode !ASTNode
+  | Neq !ASTNode !ASTNode
+  | Geq !ASTNode !ASTNode
+  | Leq !ASTNode !ASTNode
   | ConstInt !Int
   | ConstString !String
   | ConstChar !Char
@@ -31,6 +37,7 @@ data ASTNode
   | Identifier ![String]
   | Call ![ASTNode] !ASTNode -- args, name
   | IfElse !ASTNode ![ASTNode] !(Maybe [ASTNode])
+  | While !ASTNode ![ASTNode]
   | Stream
       { name :: !String,
         arugments :: ![Type],
@@ -153,6 +160,7 @@ pStatement =
   choice
     [ pLetStatement,
       pIfElseStatement,
+      pWhileStatement,
       pExpression <* pToken L.Semicolon
     ]
 
@@ -185,6 +193,16 @@ pIfElseStatement = do
     pBlock <|> ((: []) <$> pStatement)
 
   return (IfElse condition action elseAction)
+
+pWhileStatement :: Parser ASTNode
+pWhileStatement = do
+  void $ pToken L.While
+
+  condition <- pExpression
+
+  loop <- pBlock <|> ((: []) <$> pStatement)
+
+  return (While condition loop)
 
 wordsWhen :: (Char -> Bool) -> String -> [String]
 wordsWhen p s = case dropWhile p s of
@@ -231,6 +249,14 @@ table =
     ],
     [ InfixL (Add <$ pToken L.Add),
       InfixL (Subtract <$ pToken L.Sub)
+    ],
+    [
+      InfixL (Eq <$ pToken L.Eq),
+      InfixL (Neq <$ pToken L.Neq),
+      InfixL (Geq <$ pToken L.Geq),
+      InfixL (Leq <$ pToken L.Leq),
+      InfixL (Gtr <$ pToken L.Gtr),
+      InfixL (Lsr <$ pToken L.Lsr)
     ],
     [
       InfixR (Assign <$ pToken L.Assign)
