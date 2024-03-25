@@ -1,0 +1,7 @@
+extern fn printf (&char, ...) -> i32;
+
+stream main () -> i32 {
+    let a: i64 = 1;
+    let b: i64 = 2;
+    printf("%d + %d = %d\n", a, b, a+b);
+}

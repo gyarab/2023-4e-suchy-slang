@@ -1,3 +1,5 @@
-stream main () -> int {
-    print("Whas good homies!"); // Hello world! in youngster english
+extern fn printf (&char, ...) -> i32;
+
+stream main () -> i32 {
+    printf("Whas good homies!\n");
 }
