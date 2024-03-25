@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 err() {
     echo "$@"
@@ -14,7 +15,7 @@ eval set -- "$PARSED"
 while true; do
 case "$1" in
         -o|--output)
-		OUTPUT_FILE=$1
+		OUTPUT_FILE=$2
 		shift 2
 		;;
 	-c|--compile)
@@ -35,22 +36,28 @@ done
 
 if [ "$OBJECTS" = 0 ]; then
     [ -z "$OUTPUT_FILE" ] && OUTPUT_FILE="$(basename $1 .slg)"
-    TEMP=$(mktemp)
-    cat $1 |\
-        stack run 2>/dev/null |\
-        llc -O1 -filetype=obj -o "$TEMP" -
+    TEMP1=$(mktemp)
+    TEMP2=$(mktemp)
+    if cat $1 | stack run 2>/dev/null > "$TEMP1"; then
+
+	    llc -O1 -filetype=obj -o "$TEMP2" "$TEMP1"
+	    
+	    ld.lld -o "$OUTPUT_FILE" \
+		-dynamic-linker /lib64/ld-linux-x86-64.so.2 \
+		/lib/crt1.o /lib/crti.o \
+		"$TEMP2" \
+		/lib/crtn.o \
+		-L /lib -lc
+    else
+	    cat "$TEMP1"
+	    exit 1
+    fi
     
-    ld.lld -o "$OUTPUT_FILE" -dynamic-linker /lib64/ld-linux-x86-64.so.2 /lib/crt1.o /lib/crti.o "$TEMP" /lib/crtn.o -L /lib -lc
-    
-    rm "$TEMP"
+    rm "$TEMP1" "$TEMP2"
 else
-    [ -z "$OUTPUT_FILE" ] && OUTPUT_FILE="$(basename $1 .slg).o"
-    cat $1 |\
-        stack run 2>/dev/null |\
-        llc -O1 -filetype=obj -o "$OUTPUT_FILE" -
+    err "Not implemented"
+    # [ -z "$OUTPUT_FILE" ] && OUTPUT_FILE="$(basename $1 .slg).o"
+    # cat $1 |\
+    #     stack run 2>/dev/null |\
+    #     llc -O1 -filetype=obj -o "$OUTPUT_FILE" -
 fi
-
-
-
-
-

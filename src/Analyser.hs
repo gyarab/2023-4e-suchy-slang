@@ -1,6 +1,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
-module Analyser (addType, addType', getTypeError, getTypeError', TypedObject(..), extractType) where
+module Analyser (addType, addType', getTypeError, getTypeError', TypedObject(..), extractType, forceSpecificType) where
 
 import Parser as P
 import qualified Data.Map as Map
@@ -47,10 +47,10 @@ addType types node =
     P.ConstString {} -> Right (T.ref T.Char, node)
     P.ConstChar {} -> Right (T.Char, node)
     P.ConstFloat {} -> Right (T.Float, node)
-    P.Add l r -> forceSameType node l r
-    P.Subtract l r -> forceSameType node l r
-    P.Multiply l r -> forceSameType node l r
-    P.Divide l r -> forceSameType node l r
+    -- P.Add l r -> forceSameType types node l r
+    -- P.Subtract l r -> forceSameType types node l r
+    -- P.Multiply l r -> forceSameType types node l r
+    -- P.Divide l r -> forceSameType types node l r
 
     P.Negate n -> do
       t <- fst <$> addType types n
@@ -86,15 +86,9 @@ addType types node =
 
     n -> Left $ show n ++ " has no type"
 
-  where
-    forceSameType node l r = do
-      (tl, _) <- addType types l
-      (tr, _) <- addType types r
-      if tl == tr then Right (tl, node) else Left $ "cannot operate together on " ++ show tl ++ " and " ++ show tr
-
-    forceSpecificType node t = do
-      (tn, _) <- addType types node
-      if tn == t then Right (t, node) else Left $ "incompatible type " ++ show tn ++ "(must be " ++ show t ++ ")"
+forceSpecificType types node t = do
+  (tn, _) <- addType types node
+  if tn == t then Right (t, node) else Left $ "incompatible type " ++ show tn ++ "(must be " ++ show t ++ ")"
 
 getTypeError builtInTypes (P.Declare identifier iType Nothing) = Nothing
 getTypeError builtInTypes (P.Declare identifier iType (Just value)) =

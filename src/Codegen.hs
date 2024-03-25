@@ -7,7 +7,6 @@ import qualified Lexer as L
 import qualified Data.Text as T
 import Types (llvmType)
 import Control.Monad.State
-import qualified Analyser as A
 import qualified Types
 
 import qualified Data.Map as Map
@@ -24,6 +23,8 @@ type TypeMap = Map String Types.TypedObject
 
 data Assembled = Inline !Int | Referenced !Int | Global !String
   deriving (Eq)
+
+type TAssembled = (Types.Type, Assembled)
 
 newtype ExceptT e m a = ExceptT (m (Either e a))
 
@@ -44,6 +45,7 @@ data AssemblerState = AssemblerState {
   }
   deriving (Show, Eq)
 
+--- Fail on first error
 failOnFirst :: [Either a b] -> Either a [b]
 failOnFirst [] = Right []
 failOnFirst (x:xs) =
@@ -54,18 +56,46 @@ failOnFirst (x:xs) =
         Left err -> Left err
         Right rest -> Right (ix:rest)
 
+lookupVar :: String -> AsState (Types.TypedObject, Assembled)
+lookupVar v = do
+  mVal <- gets (Map.lookup v . locals)
+  mTyp <- gets (Map.lookup v . types)
+
+  if isNothing mVal then
+    lift $ Left ("invalid reference: " ++ v)
+  else do
+    let (Just val) = mVal
+    let (Just typ) = mTyp
+
+    return (typ, val)
+
+--- Replace an error message with another
+infix 6 <?>
+(<?>) :: AsState a -> String -> AsState a
+(<?>) m newErr = do
+  s <- get
+  case runStateT m s of
+    Left err -> lift $ Left newErr
+    Right (x, s1) -> do
+      put s1
+      return x
+
+forceSameType :: Types.Type -> Types.Type -> AsState ()
+forceSameType tl tr =
+  lift $ if tl == tr then Right () else Left $ show tl ++ " and " ++ show tr ++ " must be of the same type"
+
 fArgs args = if not (null args) then (llvmType . head) args ++ concatMap ((", "++) . llvmType) (tail args) else ""
 concatWith delim args = if not (null args) then head args ++ concatMap (delim++) (tail args) else ""
 
-assemble :: P.ASTNode -> AsState Assembled
-assemble (P.ConstInt i) = pure (Inline i)
+assemble :: P.ASTNode -> AsState TAssembled
+assemble (P.ConstInt i) = pure (Types.I64, Inline i)
 
 -- XXX: nezvládá unicode :(
 assemble (P.ConstString s) = do
   modify incrGlobal
   n <- gets (Global . ("str" ++) . show . global)
   modify $ addDeclaration (T.pack (show n ++ " = private constant [" ++ show (length s + 1) ++ " x i8] c\"" ++ concatMap escapeChar s ++ "\\00\", align 1"))
-  return n
+  return (Types.ref Types.Char, n)
   where
     escapeChar c
       | c == '\n' = "\\0A"
@@ -80,30 +110,28 @@ assemble (P.Multiply l r) = assembleBinaryOp "mul" l r
 assemble (P.Divide l r) = assembleBinaryOp "sdiv" l r
 
 assemble (P.Call args func) = do
+  aargs <- mapM assemble args
+
+  modify incrNum
+  n <- gets (Referenced . num)
+
+  let P.Identifier (funcName:_) = func
+
   types <- gets types
+  typ <- case Map.lookup funcName types of
+    Nothing -> lift $ Left ("invalid reference: " ++ funcName)
+    Just x -> lift $ Right x
 
-  case mapM (A.addType types) args of
-    Left err -> lift $ Left err
-    Right targs -> do
-      aargs <- mapM (assemble . snd) targs
+  case typ of
+    Types.Function funcTypes retType -> do
 
-      modify incrNum
-      n <- gets (Referenced . num)
+      let argTypes = map (llvmType . fst) aargs
+      let argsWithTypes = zipWith (\ t r -> t ++ " " ++ show (snd r)) argTypes aargs
 
-      let P.Identifier (funcName:_) = func
+      modify $ addAssembly (mk n funcName retType (map llvmType funcTypes) argsWithTypes)
 
-      typ <- case Map.lookup funcName types of
-        Nothing -> lift $ Left ("invalid reference: " ++ funcName)
-        Just x -> lift $ Right x
-
-      case typ of
-        Types.Function funcTypes retType -> do
-
-          let argTypes = map (llvmType . fst) targs
-          let argsWithTypes = zipWith (\ t r -> t ++ " " ++ show r) argTypes aargs
-          modify $ addAssembly (mk n funcName retType (map llvmType funcTypes) argsWithTypes)
-          return n
-        f -> lift $ Left (funcName ++ " is not callable")
+      return (retType, n)
+    f -> lift $ Left (funcName ++ " is not callable")
 
     where
       mk n funcName retType targs aargs =
@@ -112,68 +140,73 @@ assemble (P.Call args func) = do
 assemble (P.Declare name typ val) = do
   modify incrNum
   n <- gets (Referenced . num)
+  types <- gets types
 
   modify $ addAssembly (allocation n)
 
   modify $ setVariable name typ n
 
   case val of
-    Nothing -> return n
-    Just val -> do
-      ass <- assemble val
-      modify $ addAssembly (store n ass)
-      return n
+    Nothing -> return (typ, n)
+    Just val -> (typ, n) <$ assemble (P.Assign (P.Identifier [name]) val) -- throw away reference to value, return reference to var instead
 
   where
     allocation ref = T.pack (show ref ++ " = alloca " ++ llvmType typ)
-    store ptr ass = T.pack ("store " ++ llvmType typ ++ " " ++ show ass ++ ", ptr " ++ show ptr)
 
 assemble (P.Identifier (v:xs)) = do
   modify incrNum
-
   n <- gets (Referenced . num)
-  mVal <- gets (Map.lookup v . locals)
-  mTyp <- gets (Map.lookup v . types)
-  if isNothing mVal then
-    lift $ Left ("invalid reference: " ++ v)
-  else do
-    let (Just val) = mVal
-    let (Just typ) = mTyp
 
-    typ <- case typ of
-      Types.Variable v -> lift $ Right v
-      f -> lift $ Left (v ++ " is not a variable") 
+  (typ, val) <- lookupVar v
 
-    modify $ addAssembly (load n typ val)
-    return n
+  typ <- case typ of
+    Types.Variable v -> lift $ Right v
+    f -> lift $ Left (v ++ " is not a variable")
+
+  modify $ addAssembly (load n typ val)
+  return (typ, n)
 
   where
     load n t v = T.pack (show n ++ " = load " ++ llvmType t ++ ", ptr " ++ show v)
 
+assemble (P.Assign (P.Identifier (var:_)) val) = do
+  (typ, ref) <- lookupVar var
 
-assembleBody :: [P.ASTNode] -> AsState Assembled
+  typ <- case typ of
+    Types.Variable v -> lift $ Right v
+    f -> lift $ Left (var ++ " is not a variable")
+
+  (valTyp, valAss) <- assemble val
+
+  forceSameType typ valTyp <?> ("cannot assign " ++ show valTyp ++ " to " ++ show typ)
+
+  modify $ addAssembly (store typ valAss ref)
+
+  return (valTyp, valAss)
+
+  where
+    store typ ass ptr = T.pack ("store " ++ llvmType typ ++ " " ++ show ass ++ ", ptr " ++ show ptr)
+
+
+assembleBody :: [P.ASTNode] -> AsState TAssembled
 assembleBody stmts = do
   assembled <- mapM assemble stmts
   return $ last assembled
 
 
-assembleBinaryOp :: String -> P.ASTNode -> P.ASTNode -> AsState Assembled
+assembleBinaryOp :: String -> P.ASTNode -> P.ASTNode -> AsState TAssembled
 assembleBinaryOp instr left right = do
-  l <- assemble left
-  r <- assemble right
+  (tl, al) <- assemble left
+  (tr, ar) <- assemble right
 
-  types <- gets types
-
-  (t, _) <- case A.addType types left of -- we dont have to check for equality, since we did it earlier
-    Right t -> lift $ Right t
-    err -> lift err
+  forceSameType tl tr <?> ("cannot operate " ++ show tl ++ " with " ++ show tr)
 
   modify incrNum
 
   n <- gets (Referenced . num)
-  modify $ addAssembly (mk n l r t)
+  modify $ addAssembly (mk n al ar tl)
 
-  return n
+  return (tl, n)
 
   where
     mk n l r t = T.pack (show n ++ " = " ++ instr ++ " " ++ llvmType t ++ " " ++ show l ++ ", " ++ show r)
