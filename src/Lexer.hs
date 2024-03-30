@@ -14,7 +14,9 @@ module Lexer (
   pString,
   unString,
   pChar,
-  unChar
+  unChar,
+  pBoolean,
+  unBoolean
 ) where
 
 import Common
@@ -33,7 +35,6 @@ data LToken
   | Struct
 
   | Rcv
-  | Send
   | Catch
 
   | If
@@ -45,6 +46,7 @@ data LToken
   | ConstFloat !Float
   | ConstChar !Char
   | ConstString !String
+  | ConstBoolean !Bool
 
   | Dot
   | Comma
@@ -112,6 +114,11 @@ pChar :: Parser LToken
 pChar = lexeme $ ConstChar <$> between (single '\'') (single '\'') L.charLiteral
 
 unChar (ConstChar c) = c
+
+pBoolean :: Parser LToken
+pBoolean = ConstBoolean True <$ symbol "true" <|> ConstBoolean False <$ symbol "false"
+
+unBoolean (ConstBoolean b) = b
 
 pToken :: LToken -> Parser LToken
 pToken Let = Let <$ symbol "let"

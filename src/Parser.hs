@@ -16,7 +16,7 @@ import Types (Type)
 data ASTNode
   = Declare
       { identifier :: !String,
-        iType :: !Type,
+        iType :: !(Maybe Type),
         value :: !(Maybe ASTNode)
       }
   | Negate !ASTNode
@@ -34,19 +34,20 @@ data ASTNode
   | ConstString !String
   | ConstChar !Char
   | ConstFloat !Float
+  | ConstBoolean !Bool
   | Identifier ![String]
   | Call ![ASTNode] !ASTNode -- args, name
   | IfElse !ASTNode ![ASTNode] !(Maybe [ASTNode])
   | While !ASTNode ![ASTNode]
   | Stream
       { name :: !String,
-        arugments :: ![Type],
-        retVal :: !Type,
+        inType :: !Type,
+        outType :: !Type,
         body :: !(Maybe [ASTNode])
       }
   | ExternFunction
       { name :: !String,
-        arugments :: ![Type],
+        arguments :: ![Type],
         retVal :: !Type
       }
   | Struct
@@ -62,6 +63,8 @@ data ASTNode
         node :: !ASTNode
     }
   | Assign !ASTNode !ASTNode
+  | Catch !ASTNode
+  | Pipe !ASTNode !ASTNode
   deriving (Eq, Ord, Show)
 
 separatedBy :: Parser b -> Parser a -> Parser [a]
@@ -77,7 +80,7 @@ pStream = do
 
   name <- pIdentifierSingle
 
-  args <- pArguments
+  args <- pType
 
   void $ pToken L.Arrow
 
@@ -86,19 +89,6 @@ pStream = do
   body <- (Nothing <$ pToken L.Semicolon) <|> (Just <$> pBlock)
 
   return $ Stream name args retType body
-  where
-    pArgument :: Parser Type
-    pArgument = pType
-
-    pArguments :: Parser [Type]
-    pArguments = L.pParens $ do
-      exp <- optional . try $ pArgument
-      moreExprs <- nextArg
-      return $ case exp of
-        Just e -> e : moreExprs
-        Nothing -> moreExprs
-
-    nextArg = many $ try (pToken L.Comma *> pArgument)
 
 pExtern :: Parser ASTNode
 pExtern = do
@@ -134,7 +124,7 @@ pStruct = do
 
   name <- pIdentifierSingle
 
-  fields <- L.pBraces (separatedBy (pToken L.Comma) pField)
+  fields <- try pSimple <|> L.pBraces (separatedBy (pToken L.Comma) pField)
 
   return $ Struct name (Map.fromList fields)
 
@@ -145,15 +135,37 @@ pStruct = do
       fType <- pType
       return (name, fType)
 
+    pSimple = do
+      void $ pToken L.Assign
+      typ <- pType
+      case typ of
+        T.Tuple types -> return $ zipWith (\x y -> (show x, y)) [1..] types
+        other -> fail "structure can be either a tuple or a fully defined structure"
+
+
 pBlock :: Parser [ASTNode]
 pBlock = L.pBraces $ many pStatement
 
 pType :: Parser T.Type
-pType = do
-  dereferences <- many (pToken L.Ref)
-  baseType <- L.pType
+pType = atom <|> T.Tuple <$> pMultiple
 
-  return $ foldr (const T.ref) baseType dereferences
+  where
+    atom :: Parser Type
+    atom = do
+      dereferences <- many (pToken L.Ref)
+      baseType <- L.pType
+
+      return $ foldr (const T.ref) baseType dereferences
+
+    pMultiple :: Parser [Type]
+    pMultiple = L.pParens $ do
+      exp <- optional . try $ atom
+      moreExprs <- nextAtom
+      return $ case exp of
+        Just e -> e : moreExprs
+        Nothing -> moreExprs
+
+    nextAtom = many $ try (pToken L.Comma *> atom)
 
 pStatement :: Parser ASTNode
 pStatement =
@@ -170,9 +182,9 @@ pLetStatement = do
 
   ident <- pIdentifierSingle
 
-  void $ pToken L.Colon
-
-  iType <- pType
+  iType <- optional . try $ do
+    void $ pToken L.Colon
+    pType
 
   ex <- optional . try $ (void (pToken L.Assign) *> pExpression)
 
@@ -223,18 +235,11 @@ pArguments = L.pParens $ do
 
 pTerm =
   L.pParens pExpression
-    <|> Identifier
-    . L.unIdentifier
-    <$> L.pIdentifier
-      <|> ConstInt
-      . L.unInteger
-    <$> L.pInteger
-      <|> ConstString
-      . L.unString
-    <$> L.pString
-      <|> ConstChar
-      . L.unChar
-    <$> L.pChar
+    <|> ConstBoolean . L.unBoolean <$> L.pBoolean
+    <|> Identifier . L.unIdentifier <$> L.pIdentifier
+    <|> ConstInt . L.unInteger <$> L.pInteger
+    <|> ConstString . L.unString <$> L.pString
+    <|> ConstChar . L.unChar <$> L.pChar
 
 table =
   [ [ Prefix (Dereference . length <$> some (pToken L.Deref)),
@@ -259,6 +264,10 @@ table =
       InfixL (Lsr <$ pToken L.Lsr)
     ],
     [
+      InfixR (Pipe <$ pToken L.Pipe)
+    ],
+    [
+      Prefix (Catch <$ pToken L.Catch),
       InfixR (Assign <$ pToken L.Assign)
     ]
   ]
