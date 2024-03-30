@@ -12,13 +12,15 @@ data Type
   | StructureStub !String -- structure data stored separately
   | Void
   | Tuple ![Type]
+  | PipelineT !Type !Type
   deriving (Show, Eq, Ord)
 
 data TypedObject
-  = Structure !(Map String Type)
+  = Structure ![(String, Type)]
   | Function ![Type] !Type
   | Stream !Type !Type
   | Variable !Type
+  | Pipeline !Int !Type
   deriving (Show, Eq, Ord)
 
 -- XXX: we could techically dereference an ellipsis here :(
@@ -38,7 +40,7 @@ llvmType Boolean = "i1" -- :)
 llvmType Ellipsis = "..."
 llvmType Void = "void"
 llvmType (Pointer _) = "ptr"
-llvmType (StructureStub s) = "%struct_" ++ s -- prepend struct_ to not collide with generated tuple types
+llvmType (StructureStub s) = s -- prepend struct_ to not collide with generated tuple types
 llvmType (Tuple types) = "{" ++ concatWith "," (map llvmType types) ++ "}" -- inline LLVM structure type
 
 -- determine if the type is first-class in LLVM

@@ -23,4 +23,4 @@ ntimes n f a = f (ntimes (n-1) f a)
 
 extractType P.ExternFunction { name, arguments, retVal } = (name, T.Function arguments retVal)
 extractType P.Stream { name, inType, outType } = (name, T.Stream inType outType)
-extractType P.Struct { name, attributes } = (name, T.Structure attributes)
+extractType P.Struct { name, attributes } = (name, T.Structure (Map.assocs attributes))

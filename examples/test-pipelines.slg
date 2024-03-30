@@ -1,0 +1,11 @@
+extern fn printf(&char, ...) -> i32;
+
+stream double i64 -> i64 {
+    (catch in) * 2 | out;
+}
+
+stream main (i32, &&char) -> i32 {
+    let two = catch 1 | double | double;
+    printf("when you double 1 twice, you get %d\n", two);
+    0 as i32 | out;
+}

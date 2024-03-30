@@ -12,6 +12,7 @@ import qualified Types
 import qualified Data.Map as Map
 import Data.Map(Map)
 import Data.Maybe (isNothing, isJust)
+import Text.Read (readMaybe)
 
 data Module = Module {
    constants :: ![(String, String)],
@@ -21,12 +22,10 @@ data Module = Module {
 
 type TypeMap = Map String Types.TypedObject
 
-data Assembled = Inline !Int | Referenced !Int | Global !String | Dummy
+data Assembled = Inline !Int | Referenced !Int | Global !String | Dummy | Pipeline !Int !Int
   deriving (Eq)
 
 type TAssembled = (Types.Type, Assembled)
-
-newtype ExceptT e m a = ExceptT (m (Either e a))
 
 type AsState = StateT AssemblerState (Either String)
 
@@ -35,6 +34,7 @@ instance Show Assembled where
   show (Referenced i) = '%':show i
   show (Global s) = '@':s
   show Dummy = "USED DUMMY SOMEWHERE. NICHT GOOD"
+  show (Pipeline i _) = "pipeline_" ++ show i
 
 data AssemblerState = AssemblerState {
     labelN :: !Int,
@@ -98,15 +98,33 @@ replaceType t (_, a) = (t, a)
 fArgs args = if not (null args) then (llvmType . head) args ++ concatMap ((", "++) . llvmType) (tail args) else ""
 concatWith delim args = if not (null args) then head args ++ concatMap (delim++) (tail args) else ""
 
-memCpy :: Types.Type -> Assembled -> Assembled -> AsState ()
-memCpy typ from to = do
+getStackPtr v = do
+  name <- gets (P.name . stream)
+  n <- Referenced <$> nextNum
+  modify $ addAssembly (T.pack (show n ++ " = getelementptr %stream_"++name++"_locals, ptr %locals, i32 0, i32 " ++ show v))
+  return n
+
+sizeOf :: Types.Type -> AsState TAssembled
+sizeOf typ = do
   n <- Referenced <$> nextNum
   n2 <- Referenced <$> nextNum
   -- get size of element into n2
   modify $ addAssembly (T.pack (show n ++ " = getelementptr " ++ llvmType typ ++ ", ptr null, i32 1"))
   modify $ addAssembly (T.pack (show n2 ++ " = ptrtoint ptr " ++ show n ++ " to i32"))
+  return (Types.I32, n2)
+
+memCpy :: Types.Type -> Assembled -> Assembled -> AsState ()
+memCpy typ from to = do
+  (_, size) <- sizeOf typ
   -- call memcpy intrinsic
-  modify $ addAssembly (T.pack ("call void @llvm.memcpy.p0.p0.i32(ptr " ++ show to ++ ", ptr " ++ show from ++ ", i32 " ++ show n2 ++ ", i1 0)"))
+  modify $ addAssembly (T.pack ("call void @llvm.memcpy.p0.p0.i32(ptr " ++ show to ++ ", ptr " ++ show from ++ ", i32 " ++ show size ++ ", i1 0)"))
+  lift $ Right ()
+
+memSet :: Types.Type -> Assembled -> Int -> AsState ()
+memSet typ what byte = do
+  (_, size) <- sizeOf typ
+  -- call memset intrinsic
+  modify $ addAssembly (T.pack ("call void @llvm.memset.p0.i32(ptr " ++ show what ++ ", i8 " ++ show byte ++ ", i32 " ++ show size ++ ", i1 0)"))
   lift $ Right ()
 
 store :: Types.Type -> Assembled -> Assembled -> AsState ()
@@ -116,7 +134,20 @@ store typ what whereTo =
   else
     memCpy typ what whereTo
 
-    
+pipeToOut :: Types.Type -> Assembled -> AsState TAssembled
+pipeToOut twhat aswhat = do
+  name <- gets (P.name . stream)
+  outType <- gets (P.outType . stream)
+  if twhat == outType then do
+    modify incrBlock
+    bn <- gets blockN
+    modify $ addAssembly (T.pack ("store " ++ llvmType twhat ++ " " ++ show aswhat ++ ", ptr %return_ptr"))
+    modify $ addAssembly (T.pack ("store i8* blockaddress(@stream_" ++ name ++ ", %.block" ++ show bn ++ "), i8** %block"))
+    modify $ addAssembly (T.pack "ret i1 1")
+    modify $ addAssembly (T.pack (".block" ++ show bn ++ ":"))
+    lift $ Right (Types.Void, Dummy)
+  else
+    lift $ Left ("cannot output " ++ show twhat ++ " to " ++ show outType)
 
 assemble :: P.ASTNode -> AsState TAssembled
 assemble (P.ConstInt i) = pure (Types.I64, Inline i)
@@ -185,15 +216,18 @@ assemble (P.Declare name typ val) = do
       if t == vtyp then
         declareAndStore t vass
       else
-        lift $ Left ("declaration of " ++ show name ++ ": cannot assign " ++ show v ++ " to declared type " ++ show t)
+        lift $ Left ("declaration of " ++ show name ++ ": cannot assign " ++ show vtyp ++ " to declared type " ++ show t)
     (Nothing, Just v) -> do
       (vtyp, vass) <- assemble v
-      declareAndStore vtyp vass
+      case vass of
+        Pipeline pn ln -> do
+          modify $ declarePipeline name (Types.Pipeline pn vtyp)
+          return (vtyp, Dummy)
+        _ -> declareAndStore vtyp vass
     (Just t, Nothing) -> do
       modify $ declareVar name t
       return (t, Dummy)
     (Nothing, Nothing) -> lift $ Left ("declaration of " ++ show name ++ ": must be declared with either a type or a value")
-      
 
   where
     getPtr name n v = T.pack (show n ++ " = getelementptr %stream_"++name++"_locals, ptr %locals, i32 0, i32 " ++ show v)
@@ -207,24 +241,52 @@ assemble (P.Declare name typ val) = do
       store typ ass n
       return (typ, Dummy)
 
-assemble (P.Identifier (v:xs)) = do
-  _ <- nextNum
-  n <- nextNum
+assemble (P.Identifier (v:attrs)) = do
   name <- gets (P.name . stream)
 
-  (typ, val) <- lookupVar v
+  (typ_obj, val) <- lookupVar v
 
-  typ <- case typ of
-    Types.Variable v -> lift $ Right v
-    f -> lift $ Left (v ++ " is not a variable")
+  case typ_obj of
+    Types.Variable t -> do
+      ptr <- Referenced <$> nextNum
+      modify $ addAssembly (getVarPtr name ptr val)
 
-  modify $ addAssembly (getPtr name n val)
-  modify $ addAssembly (load n typ val)
-  return (typ, Referenced n)
+      (typ, ptr) <- loadIfNeeded t ptr
+
+      foldM getAttribute (typ, ptr) attrs
+
+    Types.Pipeline n t -> return (t, Pipeline n val)
+
+    _ -> lift $ Left (v ++ " is not a variable")
 
   where
-    getPtr name n v = T.pack (show (Referenced (n-1)) ++ " = getelementptr %stream_"++name++"_locals, ptr %locals, i32 0, i32 " ++ show v)
-    load n t v = T.pack (show (Referenced n) ++ " = load " ++ llvmType t ++ ", ptr " ++ show (Referenced (n-1)))
+    getVarPtr name n v = T.pack (show n ++ " = getelementptr %stream_" ++ name ++ "_locals, ptr %locals, i32 0, i32 " ++ show v)
+    load n ptr t = T.pack (show n ++ " = load " ++ llvmType t ++ ", ptr " ++ show ptr)
+
+    loadIfNeeded typ ptr = do
+      if Types.isFirstClass typ then do
+          n <- Referenced <$> nextNum
+          modify $ addAssembly (load n ptr typ)
+          return (typ, n)
+      else
+        return (typ, ptr)
+
+    getAttribute (typ, ptr) attr = do
+      n <- Referenced <$> nextNum
+      case typ of
+        Types.Tuple vals -> do
+          case readMaybe attr :: Maybe Int of
+            Just a ->
+              if a < length vals then do
+                let t = vals !! a
+                modify $ addAssembly (T.pack (show n ++ " = getelementptr " ++ llvmType typ ++ ", ptr " ++ show ptr ++ ", i32 0, i32 " ++ attr))
+                loadIfNeeded t n
+              else
+                lift $ Left ("no attribute " ++ show attr ++ " on " ++ show typ)
+            Nothing ->
+              lift $ Left ("no attribute " ++ show attr ++ " on " ++ show typ)
+        _ -> lift $ Left ("no attribute " ++ show attr ++ " on " ++ show typ)
+
 
 assemble (P.Assign (P.Identifier (var:_)) val) = do
   name <- gets (P.name . stream)
@@ -295,17 +357,33 @@ assemble (P.While cond loop) = do
 
   return (Types.Void, Dummy)
 
+assemble (P.Dereference times val) = do
+  (tval, assval) <- assemble val
+  dereference tval times assval
+  where
+    dereference typ times ptr = do
+      case typ of
+        Types.Pointer t -> do
+          n <- Referenced <$> nextNum
+          modify $ addAssembly (T.pack (show n ++ " = load " ++ llvmType t ++ ", ptr " ++ show ptr))
+          if times > 1
+            then dereference t (times-1) n
+            else return (t, n)
+        _ -> lift $ Left ("cannot dereference " ++ show typ)
+
+
 assemble (P.Catch what) = do
-  case what of
-    (P.Identifier ["in"]) -> do
+  (twhat, aswhat) <- assemble what
+  (retType, ref) <- case aswhat of
+    Pipeline (-1) _ -> do
       n <- Referenced <$> nextNum
       n2 <- Referenced <$> nextNum
       n3 <- Referenced <$> nextNum
       n4 <- Referenced <$> nextNum
       n5 <- Referenced <$> nextNum
       n6 <- Referenced <$> nextNum
-      t <- gets (P.inType . stream)
       name <- gets (P.name . stream)
+      let Types.PipelineT _ t = twhat
       -- allocate return object
       modify $ addAssembly (T.pack (show n ++ " = alloca " ++ llvmType t))
       -- get their locals
@@ -323,29 +401,174 @@ assemble (P.Catch what) = do
       l <- gets labelN
       modify $ addAssembly (T.pack ("br i1 " ++ show n6 ++ ", label %lbl" ++ show l ++ ", label %.blockblocked"))
       modify $ addAssembly (T.pack ("lbl" ++ show l ++ ":"))
+      return (t, n)
 
-      if Types.isFirstClass t then do
-        n7 <- Referenced <$> nextNum
-        modify $ addAssembly (T.pack (show n7 ++ " = load " ++ llvmType t ++ ", ptr " ++ show n))
-        lift $ Right (t, n7)
-      else
-        lift $ Right (t, n)
+    Pipeline pn ln -> do
+      let Types.PipelineT _ t = twhat
+      let combType = Types.StructureStub ("%pipeline_" ++ show pn ++ "_stack_comb")
 
-    _ -> lift $ Left "catch not implemented"
+      funcPtr <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show funcPtr ++ " = load ptr, ptr @pipeline_"++show pn))
+      -- allocate return object
+      n <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show n ++ " = alloca " ++ llvmType t))
+
+      stack <- getStackPtr ln
+
+      blockPtr <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show blockPtr ++ " = getelementptr " ++ llvmType combType ++ ", ptr " ++ show stack ++ ", i32 0, i32 1"))
+
+      -- get next call
+      nxtCall <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show nxtCall ++ " = getelementptr %clt, %clt* @pipeline_" ++ show pn ++ ", i32 1"))
+
+      retVal <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show retVal ++ " = call i1 " ++ show funcPtr ++ "(ptr " ++ show stack ++ ", ptr " ++ show n ++ ", ptr " ++ show nxtCall ++ ", ptr " ++ show blockPtr ++ ")"))
+
+      modify incrLabel
+      l <- gets labelN
+      modify $ addAssembly (T.pack ("br i1 " ++ show retVal ++ ", label %lbl" ++ show l ++ ", label %.blockblocked"))
+      modify $ addAssembly (T.pack ("lbl" ++ show l ++ ":"))
+
+      return (t, n)
+      
+    d -> lift $ Left ("can only catch pipelines, but got " ++ show d)
+
+
+  if Types.isFirstClass retType then do
+    n <- Referenced <$> nextNum
+    modify $ addAssembly (T.pack (show n ++ " = load " ++ llvmType retType ++ ", ptr " ++ show ref))
+    return (retType, n)
+  else
+    return (retType, ref)
+
+
 assemble (P.Pipe what to) = do
-  (twhat, aswhat) <- assemble what
-  name <- gets (P.name . stream)
-  case to of
-    (P.Identifier ["out"]) -> do
-      modify incrBlock
-      bn <- gets blockN
-      modify $ addAssembly (T.pack ("store " ++ llvmType twhat ++ " " ++ show aswhat ++ ", ptr %return_ptr"))
-      modify $ addAssembly (T.pack ("store i8* blockaddress(@stream_" ++ name ++ ", %.block" ++ show bn ++ "), i8** %block"))
-      modify $ addAssembly (T.pack "ret i1 1")
-      modify $ addAssembly (T.pack (".block" ++ show bn ++ ":"))
-      lift $ Right (Types.Void, Dummy)
-    _ -> lift $ Left "pipe not implemented"
+  let calls = collapse what
+  let toOut = case to of
+        (P.Identifier ["out"]) -> True
+        _ -> False
 
+  let (input:pipeline) = reverse (if toOut then calls else to:calls)
+
+  boobies <- mapM checkStream pipeline
+
+  if null boobies then do
+    (twhat, awhat) <- assemble input
+    pipeToOut twhat awhat
+  else do
+    (tinput, vinput) <- assemble input
+    case tinput of
+      Types.PipelineT {} -> lift $ Left "first node in a pipeline must be some concrete input (can be ())"
+      _ -> return ()
+
+    modify incrGlobal
+    pipelineNumber <- gets global
+    let callList = Global ("pipeline_" ++ show pipelineNumber)
+    -- Create a global call list. This is a constant that represents the order of the streams, together with addresses to the functions.
+    modify $ addDeclaration (T.pack (show callList ++ " = internal constant [" ++ show (length boobies + 1) ++ " x %clt*] [" ++ formatCallList boobies ++ ", %clt* @const_copy]"))
+
+    let combType = Types.StructureStub ("%pipeline_" ++ show pipelineNumber ++ "_stack_comb")
+    let stackType = Types.StructureStub ("%pipeline_" ++ show pipelineNumber ++ "_stack")
+
+    -- Create a call stack type. This will have to be initialized for the pipeline's local variables.
+    modify $ addDeclaration (T.pack (llvmType stackType ++ " = type {" ++ formatCallStack boobies ++ ", %sptr, " ++ llvmType tinput ++ "}"))
+
+    -- Create a combined type with the pipeline's blocks for ease of use
+    modify $ addDeclaration (T.pack (llvmType combType ++ " = type { " ++ llvmType stackType ++ ", [" ++ show (length boobies + 1) ++ " x i8*] }"))
+
+    l <- gets locals
+    modify $ declareVar "pipeline" combType
+    localNumComb <- gets (length . localNumber)
+    modify $ setLocals l -- kind of a hack to allocate memory on the stack without declaring the variable
+
+    -- init blocks
+    combPtr <- getStackPtr localNumComb
+    blockPtr <- Referenced <$> nextNum
+    modify $ addAssembly (T.pack (show blockPtr ++ " = getelementptr " ++ llvmType combType ++ ", ptr " ++ show combPtr ++ ", i32 0, i32 1"))
+    foldM_ (addBlockInit blockPtr) 0 boobies
+
+    -- init const copy block
+    constBlockPtr <- Referenced <$> nextNum
+    modify $ addAssembly (T.pack (show constBlockPtr ++ " = getelementptr i8*, ptr " ++ show blockPtr ++ ", i32 " ++ show (length boobies)))
+    modify $ addAssembly (T.pack ("store i8* blockaddress(@const_copy, %.block0), i8** " ++ show constBlockPtr))
+
+    (_, inputSize) <- sizeOf tinput
+    inpSizePtr <- Referenced <$> nextNum
+    modify $ addAssembly (T.pack (show inpSizePtr ++ " = getelementptr " ++ llvmType stackType ++ ", ptr " ++ show combPtr ++ ", i32 0, i32 " ++ show (length boobies)))
+    inpPtrPtr <- Referenced <$> nextNum
+    modify $ addAssembly (T.pack (show inpPtrPtr ++ " = getelementptr %sptr, ptr " ++ show inpSizePtr ++ ", i32 0, i32 1"))
+    inputPtr <- Referenced <$> nextNum
+    modify $ addAssembly (T.pack (show inputPtr ++ " = getelementptr " ++ llvmType stackType ++ ", ptr " ++ show combPtr ++ ", i32 0, i32 " ++ show (length boobies + 1)))
+    modify $ addAssembly (T.pack ("store i32 " ++ show inputSize ++ ", ptr " ++ show inpSizePtr))
+    modify $ addAssembly (T.pack ("store ptr " ++ show inputPtr ++ ", ptr " ++ show inpPtrPtr))
+
+    -- copy input
+    if Types.isFirstClass tinput then do
+      modify $ addAssembly (T.pack ("store " ++ llvmType tinput ++ " " ++ show vinput ++ ", ptr " ++ show inputPtr))
+    else do
+      modify $ addAssembly (T.pack ("call void @llvm.memcpy.p0.p0.i32(ptr " ++ show inputPtr ++ ", ptr " ++ show vinput ++ ", i32 " ++ show inputSize ++ ", i1 0)"))
+
+    if toOut then
+      lift $ Left "pipeline into out not impl"
+    else 
+      let (Types.Stream inT _) = snd . head $ boobies
+          (Types.Stream _ outT) = snd . last $ boobies
+          in return (Types.PipelineT inT outT, Pipeline pipelineNumber localNumComb)
+
+  where
+    collapse :: P.ASTNode -> [P.ASTNode]
+    collapse (P.Pipe w t) = t:collapse w
+    collapse x = [x]
+
+    checkStream :: P.ASTNode -> AsState (String, Types.TypedObject)
+    checkStream (P.Identifier (name:xs)) = do
+      t <- gets (Map.lookup name . types)
+      if isJust t then let (Just x) = t in lift $ Right (name, x) else lift $ Left ("undefined stream: " ++ name)
+
+
+    checkStream _ = lift $ Left "only streams can be in a pipeline"
+
+    formatCallList pipeline = concatWith ", " (map (\x -> "%clt* @stream_" ++ fst x) pipeline)
+
+    formatCallStack pipeline = concatWith ", " (map (\x -> "%stream_" ++ fst x ++ "_locals") pipeline)
+
+    addBlockInit :: Assembled -> Int -> (String, Types.TypedObject) -> AsState Int
+    addBlockInit blockPtr counter node = do
+      n <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show n ++ " = getelementptr i8*, ptr " ++ show blockPtr ++ ", i32 " ++ show counter))
+      modify $ addAssembly (T.pack ("store i8* blockaddress(@stream_" ++ fst node ++ ", %.block0), i8** " ++ show n))
+      return (counter + 1)
+
+
+
+assemble (P.Cast typ val) = do
+  (tval, assval) <- assemble val
+  case (tval, typ) of
+    (Types.Pointer x, Types.Pointer y) -> return (typ, assval)
+    (Types.I32, Types.I64) -> extend tval typ assval
+    (Types.Char, Types.I64) -> extend tval typ assval
+    (Types.Boolean, Types.I64) -> extend tval typ assval
+    (Types.Char, Types.I32) -> extend tval typ assval
+    (Types.Boolean, Types.I32) -> extend tval typ assval
+    (Types.Boolean, Types.Char) -> extend tval typ assval
+    (Types.I64, Types.I32) -> truncate tval typ assval
+    (Types.I64, Types.Char) -> truncate tval typ assval
+    (Types.I64, Types.Boolean) -> truncate tval typ assval
+    (Types.I32, Types.Char) -> truncate tval typ assval
+    (Types.I32, Types.Boolean) -> truncate tval typ assval
+    (Types.Char, Types.Boolean) -> truncate tval typ assval
+    _ -> lift $ Left ("cannot cast " ++ show tval ++ " to " ++ show typ)
+
+  where
+    extend t1 t2 ref = do
+      n <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show n ++ " = zext " ++ llvmType t1 ++ " " ++ show ref ++ " to " ++ llvmType t2))
+      return (t2, n)
+    truncate t1 t2 ref = do
+      n <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show n ++ " = trunc " ++ llvmType t1 ++ " " ++ show ref ++ " to " ++ llvmType t2))
+      return (t2, n)
 
 assembleBlock :: [P.ASTNode] -> AsState TAssembled
 assembleBlock stmts = do
@@ -385,32 +608,41 @@ addAssembly ass (AssemblerState ln n g a d t l locn sn bn) =
   AssemblerState ln n g (a++[ass]) d t l locn sn bn
 declareVar name typ (AssemblerState ln n g a d t l locn sn bn) =
   AssemblerState ln n g a d (Map.insert name (Types.Variable typ) t) (Map.insert name (length locn) l) (locn ++ [typ]) sn bn
+declarePipeline name obj (AssemblerState ln n g a d t l locn sn bn) =
+  AssemblerState ln n g a d (Map.insert name obj t) (Map.insert name (length locn) l) locn sn bn
 setLocals locals (AssemblerState ln n g a d t l locn sn bn) =
   AssemblerState ln n g a d t locals locn sn bn
 
-assemblerStateEmpty t name = AssemblerState 0 1 0 [] [] t Map.empty [] name 0
+assemblerStateEmpty globalCounter t name = AssemblerState 0 1 globalCounter [] [] t (Map.fromList [("in", -1), ("out", -2)]) [] name 0
 
 testAssembleModule :: TypeMap -> [P.ASTNode] -> Either String T.Text
 testAssembleModule types streams = do
-  streams <- mapM (assembleStream types) streams
-  return $ T.unlines [defs, T.unlines streams, runtime]
+  (streams, g) <- foldM ass (T.empty, 0) streams
+  return $ T.unlines [defs, streams, runtime]
 
-assembleStream :: TypeMap -> P.ASTNode -> Either String T.Text
-assembleStream types (P.Stream name inT outT (Just body)) = do
-  (_, as) <- runStateT (assembleBlock body) (assemblerStateEmpty types (P.Stream name inT outT Nothing))
-  return $ T.unlines [
+  where
+    ass (assembledStreams, counter) stream = do
+      (ass, g) <- assembleStream types counter stream
+      return (T.unlines [assembledStreams, ass], g)
+
+assembleStream :: TypeMap -> Int -> P.ASTNode -> Either String (T.Text, Int)
+assembleStream types globalCounter (P.Stream name inT outT (Just body)) = do
+  let types1 = Map.insert "in" (Types.Pipeline (-1) (Types.PipelineT Types.Void inT)) types
+  let types2 = Map.insert "out" (Types.Pipeline (-2) (Types.PipelineT outT Types.Void)) types1
+  (_, as) <- runStateT (assembleBlock body) (assemblerStateEmpty globalCounter types2 (P.Stream name inT outT Nothing))
+  return (T.unlines [
       T.unlines (declarations as),
       T.pack ("%stream_"++ name ++"_locals = type {" ++ concatWith ", " (map llvmType (localNumber as)) ++ "}"),
       T.pack ("define i1" ++ " @stream_" ++ name ++ "(ptr %locals, ptr %return_ptr, %clt* %call_list, i8** %block) noinline {"),
       T.pack ("  %1 = load ptr, ptr %block\n  indirectbr ptr %1, [ " ++ concatWith ", " (map (\x -> "label %.block" ++ show x) [0..(blockN as)]) ++ ", label %.blockblocked ]\n\n.block0:"),
       T.unlines (map (T.append (T.pack "  ")) (assembly as)),
       T.pack ("  br label %.block0\n\n.blockblocked:\n  store i8* blockaddress(@stream_" ++ name ++ ", %.blockblocked), i8** %block\n  ret i1 0\n}")
-    ]
+    ], global as)
 
-assembleStream _ (P.ExternFunction name args retVal) = pure $ T.pack ("declare " ++ llvmType retVal ++ " @" ++ name ++ "(" ++ fArgs args ++ ")")
+assembleStream _ c (P.ExternFunction name args retVal) = pure (T.pack ("declare " ++ llvmType retVal ++ " @" ++ name ++ "(" ++ fArgs args ++ ")"), c)
 
 assembleStruct _ (P.Struct name fields) = pure $ T.pack ""
 
--- generated with: sed 's/$/\\n/g' runtime.ll | tr -d '\n'
-defs = T.pack "%clt = type { i1(ptr,ptr,%clt*,i8**)* }\n"
-runtime = T.pack "define i1 @const_args(ptr %input, ptr %return_ptr, %clt* %call_list, i8** %block) {\n  %1 = load i8*, i8** %block\n  indirectbr i8* %1, [label %.block0, label %.block1, label %.blockblocked ]\n\n.block0:\n  %2 = getelementptr {i32, ptr}, ptr null, i32 1\n  %3 = ptrtoint ptr %2 to i32\n  call void @llvm.memcpy.p0.p0.i32(ptr %return_ptr, ptr %input, i32 %3, i1 0)\n  store i8* blockaddress(@const_args, %.block1), i8** %block\n  ret i1 1\n\n.block1:\n  br label %.blockblocked ; break equivalent\n\n.blockblocked:\n  ; make sure we are blocked - we can now just jump to .blockblocked to immediately block ourselves\n  store i8* blockaddress(@const_args, %.blockblocked), i8** %block\n  ret i1 0\n}\n\n@pipeline_main = internal constant [2 x %clt*] [%clt* @stream_main, %clt* @const_args]\n\n%pipeline_stack_main = type { %stream_main_locals, i32 }\n\ndefine i32 @main(i32 %argc, i8** %argv) noinline {\n  %1 = alloca i32\n\n  ; init pipeline\n  %2 = getelementptr %clt, %clt* @pipeline_main, i32 1\n\n  %3 = load ptr, ptr @pipeline_main\n\n  %4 = alloca %pipeline_stack_main\n  %5 = alloca [2 x i8*]\n\n  %6 = getelementptr i8*, i8** %5, i32 0\n  store i8* blockaddress(@stream_main, %.block0), i8** %6\n  %7 = getelementptr i8*, i8** %5, i32 1\n  store i8* blockaddress(@const_args, %.block0), i8** %7\n\n  ; init args input\n  %8 = alloca {i32,ptr}\n  %9 = getelementptr {i32,ptr}, ptr %8, i32 0, i32 0\n  %10 = getelementptr {i32,ptr}, ptr %8, i32 0, i32 1\n  store i32 %argc, ptr %9\n  store ptr %argv, ptr %10\n\n  ; call main stream\n  %11 = call i1 %3(ptr %4, ptr %1, %clt* %2, i8** %5)\n\n  ; load output\n  br i1 %11, label %success, label %fail\n\nsuccess:\n  %12 = load i32, ptr %1\n  ret i32 %12\n\nfail:\n  ret i32 1\n}\n\ndeclare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)\n"
+defs = T.pack "%sptr = type {i32,ptr}\n%clt = type { i1(ptr,ptr,%clt*,i8**)* }\ndeclare void @llvm.memset.p0.i32(ptr,i8,i32,i1)\n@strdbg = internal constant [8 x i8] c\"dbg %d\\0A\\00\"\n"
+-- generated with: sed 's/\\/\\\\/g;s/$/\\n/g;s/"/\\"/g' runtime.ll | tr -d '\n'
+runtime = T.pack "; a const stream that just copies the input once and blocks itself\ndefine i1 @const_copy(ptr %input, ptr %return_ptr, %clt* %call_list, i8** %block) {\n  %1 = load i8*, i8** %block\n  indirectbr i8* %1, [label %.block0, label %.block1, label %.blockblocked ]\n\n.block0:\n  %2 = load i32, ptr %input\n  %3 = getelementptr %sptr, ptr %input, i32 0, i32 1\n  %4 = load ptr, ptr %3\n  call void @llvm.memcpy.p0.p0.i32(ptr %return_ptr, ptr %4, i32 %2, i1 0)\n  store i8* blockaddress(@const_copy, %.block1), i8** %block\n  ret i1 1\n\n.block1:\n  br label %.blockblocked ; break equivalent\n\n.blockblocked:\n  ; make sure we are blocked - we can now just jump to .blockblocked to immediately block ourselves\n  store i8* blockaddress(@const_copy, %.blockblocked), i8** %block\n  ret i1 0\n}\n\n@pipeline_main = internal constant [2 x %clt*] [%clt* @stream_main, %clt* @const_copy]\n\n%pipeline_stack_main = type { %stream_main_locals, %sptr, {i32,ptr} }\n\ndefine i32 @main(i32 %argc, i8** %argv) noinline {\n  %1 = alloca i32\n\n  ; init pipeline\n  %2 = getelementptr %clt, %clt* @pipeline_main, i32 1\n\n  %3 = load ptr, ptr @pipeline_main\n\n  %4 = alloca %pipeline_stack_main\n  %5 = alloca [2 x i8*]\n\n  %6 = getelementptr i8*, i8** %5, i32 0\n  store i8* blockaddress(@stream_main, %.block0), i8** %6\n  %7 = getelementptr i8*, i8** %5, i32 1\n  store i8* blockaddress(@const_copy, %.block0), i8** %7\n\n  ; init args input\n  %8 = getelementptr {i32,ptr}, ptr null, i32 1\n  %9 = ptrtoint ptr %8 to i32\n\n  ; store length to copy\n  %10 = getelementptr %pipeline_stack_main, ptr %4, i32 0, i32 1\n  %11 = getelementptr %sptr, ptr %10, i32 0, i32 1\n  store i32 %9, ptr %10\n\n  ; store input data (argc, argv)\n  %12 = getelementptr %pipeline_stack_main, ptr %4, i32 0, i32 2\n  store ptr %12, ptr %11\n  %13 = getelementptr {i32,ptr}, ptr %12, i32 0, i32 0\n  %14 = getelementptr {i32,ptr}, ptr %12, i32 0, i32 1\n  store i32 %argc, ptr %13\n  store ptr %argv, ptr %14\n\n\n  ; call main stream\n  %15 = call i1 %3(ptr %4, ptr %1, %clt* %2, i8** %5)\n\n  ; load output\n  br i1 %15, label %success, label %fail\n\nsuccess:\n  %16 = load i32, ptr %1\n  ret i32 %16\n\nfail:\n  ret i32 1\n}\n\ndeclare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)\n"

@@ -40,7 +40,7 @@ if [ "$OBJECTS" = 0 ]; then
     TEMP2=$(mktemp)
     if cat $1 | stack run 2>/dev/null > "$TEMP1"; then
 
-	    llc -O1 -filetype=obj -o "$TEMP2" "$TEMP1"
+	    opt -O3 "$TEMP1" | llc -O0 -filetype=obj -o "$TEMP2" -
 	    
 	    ld.lld -o "$OUTPUT_FILE" \
 		-dynamic-linker /lib64/ld-linux-x86-64.so.2 \

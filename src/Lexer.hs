@@ -88,6 +88,8 @@ data LToken
 
   | Identifier ![String]
 
+  | As
+
   deriving (Eq, Ord, Show)
 
 space :: Parser ()
@@ -170,6 +172,8 @@ pToken Extern = Extern <$ symbol "extern"
 pToken Deref = Deref <$ symbol "*"
 pToken Ref = Ref <$ symbol "&"
 
+pToken As = As <$ symbol "as"
+
 pType :: Parser T.Type
 pType = lexeme $ choice
   [ T.Boolean <$ symbol "bool"
@@ -194,7 +198,7 @@ pIdentifier = Identifier <$> try (lexeme ident)
   where
     ident = do
       c <- pIdentifierName
-      rest <- many (single '.' *> pIdentifierName)
+      rest <- many (single '.' *> (pIdentifierName <|> (show <$> L.decimal)))
       return $ c:rest
 
 unIdentifier (Identifier i) = i

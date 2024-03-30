@@ -1,5 +1,6 @@
 extern fn printf (&char, ...) -> i32;
 
-stream main () -> i32 {
+stream main (i32, &&char) -> i32 {
     printf("Whas good homies!\n");
+    0 as i32 | out;
 }

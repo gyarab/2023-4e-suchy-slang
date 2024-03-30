@@ -65,6 +65,7 @@ data ASTNode
   | Assign !ASTNode !ASTNode
   | Catch !ASTNode
   | Pipe !ASTNode !ASTNode
+  | Cast !Type !ASTNode
   deriving (Eq, Ord, Show)
 
 separatedBy :: Parser b -> Parser a -> Parser [a]
@@ -241,6 +242,11 @@ pTerm =
     <|> ConstString . L.unString <$> L.pString
     <|> ConstChar . L.unChar <$> L.pChar
 
+pCast :: Parser Type
+pCast = do
+  void $ pToken L.As
+  pType
+
 table =
   [ [ Prefix (Dereference . length <$> some (pToken L.Deref)),
       Prefix (Reference . length <$> some (pToken L.Ref))
@@ -248,6 +254,8 @@ table =
     [ Postfix (Call <$> pArguments)
     ],
     [ Prefix (Negate <$ pToken L.Sub) -- negate the term
+    ],
+    [ Postfix (Cast <$> pCast)
     ],
     [ InfixL (Multiply <$ pToken L.Mult),
       InfixL (Divide <$ pToken L.Div)
@@ -264,7 +272,7 @@ table =
       InfixL (Lsr <$ pToken L.Lsr)
     ],
     [
-      InfixR (Pipe <$ pToken L.Pipe)
+      InfixL (Pipe <$ pToken L.Pipe)
     ],
     [
       Prefix (Catch <$ pToken L.Catch),
