@@ -22,7 +22,7 @@ data Module = Module {
 
 type TypeMap = Map String Types.TypedObject
 
-data Assembled = Inline !Int | Referenced !Int | Global !String | Dummy | Pipeline !Int !Int
+data Assembled = Inline !Int | Referenced !Int | Global !String | Dummy | Pipeline !Int !Int | Raw !String
   deriving (Eq)
 
 type TAssembled = (Types.Type, Assembled)
@@ -35,6 +35,7 @@ instance Show Assembled where
   show (Global s) = '@':s
   show Dummy = "USED DUMMY SOMEWHERE. NICHT GOOD"
   show (Pipeline i _) = "pipeline_" ++ show i
+  show (Raw s) = s
 
 data AssemblerState = AssemblerState {
     labelN :: !Int,
@@ -141,7 +142,10 @@ pipeToOut twhat aswhat = do
   if twhat == outType then do
     modify incrBlock
     bn <- gets blockN
-    modify $ addAssembly (T.pack ("store " ++ llvmType twhat ++ " " ++ show aswhat ++ ", ptr %return_ptr"))
+    if Types.isFirstClass twhat then do
+      modify $ addAssembly (T.pack ("store " ++ llvmType twhat ++ " " ++ show aswhat ++ ", ptr %return_ptr"))
+    else do
+      memCpy twhat aswhat (Raw "%return_ptr") 
     modify $ addAssembly (T.pack ("store i8* blockaddress(@stream_" ++ name ++ ", %.block" ++ show bn ++ "), i8** %block"))
     modify $ addAssembly (T.pack "ret i1 1")
     modify $ addAssembly (T.pack (".block" ++ show bn ++ ":"))
@@ -221,7 +225,7 @@ assemble (P.Declare name typ val) = do
       (vtyp, vass) <- assemble v
       case vass of
         Pipeline pn ln -> do
-          modify $ declarePipeline name (Types.Pipeline pn vtyp)
+          modify $ declarePipeline name (Types.Pipeline pn vtyp) ln
           return (vtyp, Dummy)
         _ -> declareAndStore vtyp vass
     (Just t, Nothing) -> do
@@ -479,7 +483,7 @@ assemble (P.Pipe what to) = do
 
     l <- gets locals
     modify $ declareVar "pipeline" combType
-    localNumComb <- gets (length . localNumber)
+    localNumComb <- gets ((\x -> x-1) . length . localNumber)
     modify $ setLocals l -- kind of a hack to allocate memory on the stack without declaring the variable
 
     -- init blocks
@@ -540,8 +544,6 @@ assemble (P.Pipe what to) = do
       modify $ addAssembly (T.pack ("store i8* blockaddress(@stream_" ++ fst node ++ ", %.block0), i8** " ++ show n))
       return (counter + 1)
 
-
-
 assemble (P.Cast typ val) = do
   (tval, assval) <- assemble val
   case (tval, typ) of
@@ -569,6 +571,21 @@ assemble (P.Cast typ val) = do
       n <- Referenced <$> nextNum
       modify $ addAssembly (T.pack (show n ++ " = trunc " ++ llvmType t1 ++ " " ++ show ref ++ " to " ++ llvmType t2))
       return (t2, n)
+
+assemble (P.MakeTuple vals) = do
+  assembled <- mapM assemble vals
+  let t = Types.Tuple (map fst assembled)
+  ref <- Referenced <$> nextNum
+  modify $ addAssembly (T.pack (show ref ++ " = alloca " ++ llvmType t))
+  foldM_ (ptrAndStore t ref) 0 assembled
+  return (t, ref)
+
+  where
+    ptrAndStore t ref counter (typ, val) = do
+      n <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show n ++ " = getelementptr " ++ llvmType t ++ ", ptr " ++ show ref ++ ", i32 0, i32 " ++ show counter))
+      modify $ addAssembly (T.pack ("store " ++ llvmType typ ++ " " ++ show val ++ ", ptr " ++ show n))
+      return (counter + 1)
 
 assembleBlock :: [P.ASTNode] -> AsState TAssembled
 assembleBlock stmts = do
@@ -608,8 +625,8 @@ addAssembly ass (AssemblerState ln n g a d t l locn sn bn) =
   AssemblerState ln n g (a++[ass]) d t l locn sn bn
 declareVar name typ (AssemblerState ln n g a d t l locn sn bn) =
   AssemblerState ln n g a d (Map.insert name (Types.Variable typ) t) (Map.insert name (length locn) l) (locn ++ [typ]) sn bn
-declarePipeline name obj (AssemblerState ln n g a d t l locn sn bn) =
-  AssemblerState ln n g a d (Map.insert name obj t) (Map.insert name (length locn) l) locn sn bn
+declarePipeline name obj lnn (AssemblerState ln n g a d t l locn sn bn) =
+  AssemblerState ln n g a d (Map.insert name obj t) (Map.insert name lnn l) locn sn bn
 setLocals locals (AssemblerState ln n g a d t l locn sn bn) =
   AssemblerState ln n g a d t locals locn sn bn
 
@@ -645,4 +662,4 @@ assembleStruct _ (P.Struct name fields) = pure $ T.pack ""
 
 defs = T.pack "%sptr = type {i32,ptr}\n%clt = type { i1(ptr,ptr,%clt*,i8**)* }\ndeclare void @llvm.memset.p0.i32(ptr,i8,i32,i1)\n@strdbg = internal constant [8 x i8] c\"dbg %d\\0A\\00\"\n"
 -- generated with: sed 's/\\/\\\\/g;s/$/\\n/g;s/"/\\"/g' runtime.ll | tr -d '\n'
-runtime = T.pack "; a const stream that just copies the input once and blocks itself\ndefine i1 @const_copy(ptr %input, ptr %return_ptr, %clt* %call_list, i8** %block) {\n  %1 = load i8*, i8** %block\n  indirectbr i8* %1, [label %.block0, label %.block1, label %.blockblocked ]\n\n.block0:\n  %2 = load i32, ptr %input\n  %3 = getelementptr %sptr, ptr %input, i32 0, i32 1\n  %4 = load ptr, ptr %3\n  call void @llvm.memcpy.p0.p0.i32(ptr %return_ptr, ptr %4, i32 %2, i1 0)\n  store i8* blockaddress(@const_copy, %.block1), i8** %block\n  ret i1 1\n\n.block1:\n  br label %.blockblocked ; break equivalent\n\n.blockblocked:\n  ; make sure we are blocked - we can now just jump to .blockblocked to immediately block ourselves\n  store i8* blockaddress(@const_copy, %.blockblocked), i8** %block\n  ret i1 0\n}\n\n@pipeline_main = internal constant [2 x %clt*] [%clt* @stream_main, %clt* @const_copy]\n\n%pipeline_stack_main = type { %stream_main_locals, %sptr, {i32,ptr} }\n\ndefine i32 @main(i32 %argc, i8** %argv) noinline {\n  %1 = alloca i32\n\n  ; init pipeline\n  %2 = getelementptr %clt, %clt* @pipeline_main, i32 1\n\n  %3 = load ptr, ptr @pipeline_main\n\n  %4 = alloca %pipeline_stack_main\n  %5 = alloca [2 x i8*]\n\n  %6 = getelementptr i8*, i8** %5, i32 0\n  store i8* blockaddress(@stream_main, %.block0), i8** %6\n  %7 = getelementptr i8*, i8** %5, i32 1\n  store i8* blockaddress(@const_copy, %.block0), i8** %7\n\n  ; init args input\n  %8 = getelementptr {i32,ptr}, ptr null, i32 1\n  %9 = ptrtoint ptr %8 to i32\n\n  ; store length to copy\n  %10 = getelementptr %pipeline_stack_main, ptr %4, i32 0, i32 1\n  %11 = getelementptr %sptr, ptr %10, i32 0, i32 1\n  store i32 %9, ptr %10\n\n  ; store input data (argc, argv)\n  %12 = getelementptr %pipeline_stack_main, ptr %4, i32 0, i32 2\n  store ptr %12, ptr %11\n  %13 = getelementptr {i32,ptr}, ptr %12, i32 0, i32 0\n  %14 = getelementptr {i32,ptr}, ptr %12, i32 0, i32 1\n  store i32 %argc, ptr %13\n  store ptr %argv, ptr %14\n\n\n  ; call main stream\n  %15 = call i1 %3(ptr %4, ptr %1, %clt* %2, i8** %5)\n\n  ; load output\n  br i1 %15, label %success, label %fail\n\nsuccess:\n  %16 = load i32, ptr %1\n  ret i32 %16\n\nfail:\n  ret i32 1\n}\n\ndeclare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)\n"
+runtime = T.pack "; a const stream that just copies the input once and blocks itself\ndefine i1 @const_copy(ptr %input, ptr %return_ptr, %clt* %call_list, i8** %block) {\n  %1 = load i8*, i8** %block\n  indirectbr i8* %1, [label %.block0, label %.block1, label %.blockblocked ]\n\n.block0:\n  %2 = load i32, ptr %input\n  %3 = getelementptr %sptr, ptr %input, i32 0, i32 1\n  %4 = load ptr, ptr %3\n  %5 = load i64, ptr %4\n  call void @llvm.memcpy.p0.p0.i32(ptr %return_ptr, ptr %4, i32 %2, i1 1)\n  store i8* blockaddress(@const_copy, %.block1), i8** %block\n  ret i1 1\n\n.block1:\n  br label %.blockblocked ; break equivalent\n\n.blockblocked:\n  ; make sure we are blocked - we can now just jump to .blockblocked to immediately block ourselves\n  store i8* blockaddress(@const_copy, %.blockblocked), i8** %block\n  ret i1 0\n}\n\n@pipeline_main = internal constant [2 x %clt*] [%clt* @stream_main, %clt* @const_copy]\n\n%pipeline_stack_main = type { %stream_main_locals, %sptr, {i32,ptr} }\n\ndefine i32 @main(i32 %argc, i8** %argv) noinline {\n  %1 = alloca i32\n\n  ; init pipeline\n  %2 = getelementptr %clt, %clt* @pipeline_main, i32 1\n\n  %3 = load ptr, ptr @pipeline_main\n\n  %4 = alloca %pipeline_stack_main\n  %5 = alloca [2 x i8*]\n\n  %6 = getelementptr i8*, i8** %5, i32 0\n  store i8* blockaddress(@stream_main, %.block0), i8** %6\n  %7 = getelementptr i8*, i8** %5, i32 1\n  store i8* blockaddress(@const_copy, %.block0), i8** %7\n\n  ; init args input\n  %8 = getelementptr {i32,ptr}, ptr null, i32 1\n  %9 = ptrtoint ptr %8 to i32\n\n  ; store length to copy\n  %10 = getelementptr %pipeline_stack_main, ptr %4, i32 0, i32 1\n  %11 = getelementptr %sptr, ptr %10, i32 0, i32 1\n  store i32 %9, ptr %10\n\n  ; store input data (argc, argv)\n  %12 = getelementptr %pipeline_stack_main, ptr %4, i32 0, i32 2\n  store ptr %12, ptr %11\n  %13 = getelementptr {i32,ptr}, ptr %12, i32 0, i32 0\n  %14 = getelementptr {i32,ptr}, ptr %12, i32 0, i32 1\n  store i32 %argc, ptr %13\n  store ptr %argv, ptr %14\n\n\n  ; call main stream\n  %15 = call i1 %3(ptr %4, ptr %1, %clt* %2, i8** %5)\n\n  ; load output\n  br i1 %15, label %success, label %fail\n\nsuccess:\n  %16 = load i32, ptr %1\n  ret i32 %16\n\nfail:\n  ret i32 1\n}\n\ndeclare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)\n"

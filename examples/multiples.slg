@@ -1,0 +1,31 @@
+extern fn printf(&char, ...) -> i32;
+extern fn malloc(i32) -> &char;
+extern fn free(&char) -> char;
+
+stream double (i64, i64) -> (bool, i64) {
+    let input = catch in;
+    let multiplier = 1;
+
+    while multiplier <= input.1 {
+        (true, input.0 * multiplier) | out;
+        multiplier = multiplier + 1;
+    }
+
+    while true {
+        (false, -1) | out;
+    }
+}
+
+stream main (i32, &&char) -> i32 {
+    let x = catch in;
+    let b = (2, 10) | double;
+
+    printf("2 multiplied by numbers up to 10\n");
+    let c = catch b;
+    while c.0 {
+        printf("multiple: %d\n", c.1);
+        c = catch b;
+    }
+
+    0 as i32 | out;
+}

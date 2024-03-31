@@ -1,4 +1,4 @@
-module Parser (pModule, ASTNode (..), separatedBy, pExpression) where
+module Parser (pModule, ASTNode (..), separatedBy, pExpression, pTuple) where
 
 import Common
 import Control.Monad
@@ -66,6 +66,7 @@ data ASTNode
   | Catch !ASTNode
   | Pipe !ASTNode !ASTNode
   | Cast !Type !ASTNode
+  | MakeTuple ![ASTNode]
   deriving (Eq, Ord, Show)
 
 separatedBy :: Parser b -> Parser a -> Parser [a]
@@ -234,7 +235,19 @@ pArguments = L.pParens $ do
   where
     nextExpr = many $ try (pToken L.Comma *> pExpression)
 
+pTuple :: Parser ASTNode
+pTuple = L.pParens $ MakeTuple <$> do
+  t <- many (try $ pExpression <* pToken L.Comma)
+  if not (null t) then do
+    last <- optional . try $ pExpression
+    case last of
+      Just l -> return (t ++ [l])
+      Nothing -> return t
+  else
+    return t
+  
 pTerm =
+  try pTuple <|>
   L.pParens pExpression
     <|> ConstBoolean . L.unBoolean <$> L.pBoolean
     <|> Identifier . L.unIdentifier <$> L.pIdentifier

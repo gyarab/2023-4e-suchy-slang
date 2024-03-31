@@ -7,7 +7,8 @@ define i1 @const_copy(ptr %input, ptr %return_ptr, %clt* %call_list, i8** %block
   %2 = load i32, ptr %input
   %3 = getelementptr %sptr, ptr %input, i32 0, i32 1
   %4 = load ptr, ptr %3
-  call void @llvm.memcpy.p0.p0.i32(ptr %return_ptr, ptr %4, i32 %2, i1 0)
+  %5 = load i64, ptr %4
+  call void @llvm.memcpy.p0.p0.i32(ptr %return_ptr, ptr %4, i32 %2, i1 1)
   store i8* blockaddress(@const_copy, %.block1), i8** %block
   ret i1 1
 
