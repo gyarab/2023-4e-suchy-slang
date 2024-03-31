@@ -162,6 +162,18 @@ allocateOnStack t = do
   modify $ setLocals l -- kind of a hack to allocate memory on the stack without declaring the variable
   return localNumComb
 
+loadIfNeeded :: Types.Type -> Assembled -> AsState TAssembled
+loadIfNeeded typ ptr = do
+  if Types.isFirstClass typ then do
+      n <- Referenced <$> nextNum
+      modify $ addAssembly (load n ptr typ)
+      return (typ, n)
+  else
+    return (typ, ptr)
+
+  where
+    load n ptr t = T.pack (show n ++ " = load " ++ llvmType t ++ ", ptr " ++ show ptr)
+
 assemble :: P.ASTNode -> AsState TAssembled
 assemble (P.ConstInt i) = pure (Types.I64, Inline i)
 
@@ -180,18 +192,88 @@ assemble (P.ConstString s) = do
       | otherwise = [c]
 
 
-assemble (P.Negate t) = assembleBinaryOp "sub" (P.ConstInt 0) t -- 0-t = -t
-assemble (P.Add l r) = assembleBinaryOp "add" l r
-assemble (P.Subtract l r) = assembleBinaryOp "sub" l r
-assemble (P.Multiply l r) = assembleBinaryOp "mul" l r
-assemble (P.Divide l r) = assembleBinaryOp "sdiv" l r
+assemble (P.Negate t) = assembleBinaryOp [
+    (Types.I64, "sub"),
+    (Types.I32, "sub"),
+    (Types.Char, "sub"),
+    (Types.Boolean, "sub"),
+    (Types.Float, "fsub")
+  ] (P.ConstInt 0) t -- 0-t = -t
+assemble (P.Add l r) = assembleBinaryOp [
+    (Types.I64, "add"),
+    (Types.I32, "add"),
+    (Types.Char, "add"),
+    (Types.Boolean, "add"),
+    (Types.Float, "fadd")
+  ] l r
+assemble (P.Subtract l r) = assembleBinaryOp [
+    (Types.I64, "sub"),
+    (Types.I32, "sub"),
+    (Types.Char, "sub"),
+    (Types.Boolean, "sub"),
+    (Types.Float, "fsub")
+  ] l r
+assemble (P.Multiply l r) = assembleBinaryOp [
+    (Types.I64, "mul"),
+    (Types.I32, "mul"),
+    (Types.Char, "mul"),
+    (Types.Boolean, "mul"),
+    (Types.Float, "fmul")
+  ] l r
+assemble (P.Divide l r) = assembleBinaryOp [
+    (Types.I64, "sdiv"),
+    (Types.I32, "sdiv"),
+    (Types.Char, "sdiv"),
+    (Types.Boolean, "sdiv"),
+    (Types.Float, "fdiv")
+  ] l r
 
-assemble (P.Eq l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp eq" l r
-assemble (P.Neq l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp neq" l r
-assemble (P.Geq l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp sge" l r
-assemble (P.Leq l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp sle" l r
-assemble (P.Gtr l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp sgt" l r
-assemble (P.Lsr l r) = replaceType Types.Boolean <$> assembleBinaryOp "icmp slt" l r
+assemble (P.Eq l r) = replaceType Types.Boolean <$> assembleBinaryOp [
+    (Types.I64, "icmp eq"),
+    (Types.I32, "icmp eq"),
+    (Types.Char, "icmp eq"),
+    (Types.Boolean, "icmp eq"),
+    (Types.Float, "fcmp eq")
+  ] l r
+assemble (P.Neq l r) = replaceType Types.Boolean <$> assembleBinaryOp [
+    (Types.I64, "icmp ne"),
+    (Types.I32, "icmp ne"),
+    (Types.Char, "icmp ne"),
+    (Types.Boolean, "icmp ne"),
+    (Types.Float, "fcmp ne")
+  ] l r
+assemble (P.Geq l r) = replaceType Types.Boolean <$> assembleBinaryOp [
+    (Types.I64, "icmp sge"),
+    (Types.I32, "icmp sge"),
+    (Types.Char, "icmp sge"),
+    (Types.Boolean, "icmp sge"),
+    (Types.Float, "fcmp sge")
+  ] l r
+assemble (P.Leq l r) = replaceType Types.Boolean <$> assembleBinaryOp [
+    (Types.I64, "icmp sle"),
+    (Types.I32, "icmp sle"),
+    (Types.Char, "icmp sle"),
+    (Types.Boolean, "icmp sle"),
+    (Types.Float, "fcmp sle")
+  ] l r
+assemble (P.Gtr l r) = replaceType Types.Boolean <$> assembleBinaryOp [
+    (Types.I64, "icmp sgt"),
+    (Types.I32, "icmp sgt"),
+    (Types.Char, "icmp sgt"),
+    (Types.Boolean, "icmp sgt"),
+    (Types.Float, "fcmp sgt")
+  ] l r
+assemble (P.Lsr l r) = replaceType Types.Boolean <$> assembleBinaryOp [
+    (Types.I64, "icmp slt"),
+    (Types.I32, "icmp slt"),
+    (Types.Char, "icmp slt"),
+    (Types.Boolean, "icmp slt"),
+    (Types.Float, "fcmp slt")
+  ] l r
+
+assemble (P.And l r) = assembleBinaryOp [(Types.Boolean, "and")] l r
+assemble (P.Or l r) = assembleBinaryOp [(Types.Boolean, "or")] l r
+assemble (P.Not v) = assembleBinaryOp [(Types.Boolean, "xor")] (P.ConstBoolean False) v -- 0^x = !x
 
 assemble (P.Call args func) = do
   aargs <- mapM assemble args
@@ -255,49 +337,7 @@ assemble (P.Declare name typ val) = do
       store typ ass n
       return (typ, Dummy)
 
-assemble (P.Identifier (v:attrs)) = do
-  name <- gets (P.name . stream)
-
-  (typ_obj, val) <- lookupVar v
-
-  case typ_obj of
-    Types.Variable t -> do
-      ptr <- getStackPtr val
-      (typ, ptr) <- loadIfNeeded t ptr
-
-      foldM getAttribute (typ, ptr) attrs
-
-    Types.Pipeline n t -> return (t, Pipeline n val)
-
-    _ -> lift $ Left (v ++ " is not a variable")
-
-  where
-    load n ptr t = T.pack (show n ++ " = load " ++ llvmType t ++ ", ptr " ++ show ptr)
-
-    loadIfNeeded typ ptr = do
-      if Types.isFirstClass typ then do
-          n <- Referenced <$> nextNum
-          modify $ addAssembly (load n ptr typ)
-          return (typ, n)
-      else
-        return (typ, ptr)
-
-    getAttribute (typ, ptr) attr = do
-      n <- Referenced <$> nextNum
-      case typ of
-        Types.Tuple vals -> do
-          case readMaybe attr :: Maybe Int of
-            Just a ->
-              if a < length vals then do
-                let t = vals !! a
-                modify $ addAssembly (T.pack (show n ++ " = getelementptr " ++ llvmType typ ++ ", ptr " ++ show ptr ++ ", i32 0, i32 " ++ attr))
-                loadIfNeeded t n
-              else
-                lift $ Left ("no attribute " ++ show attr ++ " on " ++ show typ)
-            Nothing ->
-              lift $ Left ("no attribute " ++ show attr ++ " on " ++ show typ)
-        _ -> lift $ Left ("no attribute " ++ show attr ++ " on " ++ show typ)
-
+assemble (P.Identifier a) = assembleIdentifier False (P.Identifier a)
 
 assemble (P.Assign (P.Identifier (var:_)) val) = do
   name <- gets (P.name . stream)
@@ -589,6 +629,63 @@ assemble (P.MakeTuple vals) = do
       modify $ addAssembly (T.pack ("store " ++ llvmType typ ++ " " ++ show val ++ ", ptr " ++ show n))
       return (counter + 1)
 
+assemble (P.Index a b) = assembleIndex False (P.Index a b)
+
+-- dont reference multiple times :)
+assemble (P.Reference times val) =
+  case val of
+    P.Identifier {} -> assembleIdentifier True val
+    P.Index {} -> assembleIndex True val
+    _ -> lift $ Left "can only reference indexed vars or identifiers"
+    
+assembleIdentifier :: Bool -> P.ASTNode -> AsState TAssembled
+assembleIdentifier forceNoLoad (P.Identifier (v:attrs)) = do
+  name <- gets (P.name . stream)
+
+  (typ_obj, val) <- lookupVar v
+
+  case typ_obj of
+    Types.Variable t -> do
+      ptr <- getStackPtr val
+      (typ, ptr) <- if forceNoLoad then return (Types.ref t, ptr) else loadIfNeeded t ptr
+
+      foldM getAttribute (typ, ptr) attrs
+
+    Types.Pipeline n t -> return (t, Pipeline n val)
+
+    _ -> lift $ Left (v ++ " is not a variable")
+
+  where
+    getAttribute (typ, ptr) attr = do
+      n <- Referenced <$> nextNum
+      case typ of
+        Types.Tuple vals -> do
+          case readMaybe attr :: Maybe Int of
+            Just a ->
+              if a < length vals then do
+                let t = vals !! a
+                modify $ addAssembly (T.pack (show n ++ " = getelementptr " ++ llvmType typ ++ ", ptr " ++ show ptr ++ ", i32 0, i32 " ++ attr))
+                if forceNoLoad then return (Types.ref t, n) else loadIfNeeded t n
+              else
+                lift $ Left ("no attribute " ++ show attr ++ " on " ++ show typ)
+            Nothing ->
+              lift $ Left ("no attribute " ++ show attr ++ " on " ++ show typ)
+        _ -> lift $ Left ("no attribute " ++ show attr ++ " on " ++ show typ)
+
+assembleIndex :: Bool -> P.ASTNode -> AsState TAssembled
+assembleIndex forceNoLoad (P.Index idx val) = do
+  (tidx, asidx) <- assemble idx
+  forceSameType Types.I32 tidx <?> ("index must be of type I32 (got " ++ show tidx ++ ")")
+  (tval, asval) <- assemble val
+  t <- case Types.deref tval of
+    Just v -> return v
+    Nothing -> lift $ Left ("indexed value must be ptr (got " ++ show tval ++ ")")
+  
+  n <- Referenced <$> nextNum
+  modify $ addAssembly (T.pack (show n ++ " = getelementptr " ++ llvmType tval ++ ", ptr " ++ show asval ++ ", i32 " ++ show asidx))
+
+  if forceNoLoad then return (Types.ref t, n) else loadIfNeeded t n
+
 assembleBlock :: [P.ASTNode] -> AsState TAssembled
 assembleBlock stmts = do
   locals <- gets locals
@@ -596,22 +693,27 @@ assembleBlock stmts = do
   modify $ setLocals locals -- exit block (throw away local vars)
   return $ last assembled
 
-assembleBinaryOp :: String -> P.ASTNode -> P.ASTNode -> AsState TAssembled
-assembleBinaryOp instr left right = do
-  (tl, al) <- assemble left
-  (tr, ar) <- assemble right
-
-  forceSameType tl tr <?> ("cannot operate " ++ show tl ++ " with " ++ show tr)
-
-  modify incrNum
-
-  n <- gets (Referenced . num)
-  modify $ addAssembly (mk n al ar tl)
-
-  return (tl, n)
-
+assembleBinaryOp :: [(Types.Type, String)] -> P.ASTNode -> P.ASTNode -> AsState TAssembled
+assembleBinaryOp instr left right = binOp (Map.fromList instr) left right
   where
-    mk n l r t = T.pack (show n ++ " = " ++ instr ++ " " ++ llvmType t ++ " " ++ show l ++ ", " ++ show r)
+    binOp typeMap left right = do
+      (tl, al) <- assemble left
+      (tr, ar) <- assemble right
+      instr <- case Map.lookup tr typeMap of
+        Just x -> return x
+        Nothing -> lift $ Left ("operation not defined on " ++ show tl)
+
+      forceSameType tl tr <?> ("cannot operate " ++ show tl ++ " with " ++ show tr)
+
+      modify incrNum
+
+      n <- gets (Referenced . num)
+      modify $ addAssembly (mk instr n al ar tr)
+
+      return (tl, n)
+
+      where
+        mk instr n l r t = T.pack (show n ++ " = " ++ instr ++ " " ++ llvmType t ++ " " ++ show l ++ ", " ++ show r)
 
 addDeclaration dec (AssemblerState ln n g a d t l locn sn bn) =
   AssemblerState ln n g a (d++[dec]) t l locn sn bn

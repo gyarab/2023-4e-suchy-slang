@@ -19,6 +19,9 @@ data ASTNode
         iType :: !(Maybe Type),
         value :: !(Maybe ASTNode)
       }
+  | Not !ASTNode
+  | And !ASTNode !ASTNode
+  | Or !ASTNode !ASTNode
   | Negate !ASTNode
   | Add !ASTNode !ASTNode
   | Subtract !ASTNode !ASTNode
@@ -67,6 +70,7 @@ data ASTNode
   | Pipe !ASTNode !ASTNode
   | Cast !Type !ASTNode
   | MakeTuple ![ASTNode]
+  | Index !ASTNode !ASTNode
   deriving (Eq, Ord, Show)
 
 separatedBy :: Parser b -> Parser a -> Parser [a]
@@ -245,6 +249,10 @@ pTuple = L.pParens $ MakeTuple <$> do
       Nothing -> return t
   else
     return t
+
+pIndex :: Parser ASTNode
+pIndex = L.pBrackets pExpression
+
   
 pTerm =
   try pTuple <|>
@@ -261,10 +269,12 @@ pCast = do
   pType
 
 table =
-  [ [ Prefix (Dereference . length <$> some (pToken L.Deref)),
-      Prefix (Reference . length <$> some (pToken L.Ref))
+  [ [ Postfix (Call <$> pArguments)
     ],
-    [ Postfix (Call <$> pArguments)
+    [ Postfix (Index <$> pIndex)
+    ],
+    [ Prefix (Dereference . length <$> some (pToken L.Deref)),
+      Prefix (Reference . length <$> some (pToken L.Ref))
     ],
     [ Prefix (Negate <$ pToken L.Sub) -- negate the term
     ],
@@ -283,6 +293,11 @@ table =
       InfixL (Leq <$ pToken L.Leq),
       InfixL (Gtr <$ pToken L.Gtr),
       InfixL (Lsr <$ pToken L.Lsr)
+    ],
+    [
+      Prefix (Not <$ pToken L.Not),
+      InfixL (And <$ pToken L.And),
+      InfixL (Or <$ pToken L.Or)
     ],
     [
       InfixL (Pipe <$ pToken L.Pipe)

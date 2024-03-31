@@ -61,6 +61,7 @@ data LToken
 
   | And
   | Or
+  | Not
 
   | Assign
 
@@ -148,6 +149,7 @@ pToken Leq = Leq <$ symbol "<="
 
 pToken And = And <$ symbol "&&"
 pToken Or = Or <$ symbol "||"
+pToken Not = Or <$ symbol "!"
 
 pToken Assign = Assign <$ symbol "="
 
