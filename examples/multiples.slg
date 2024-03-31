@@ -11,9 +11,7 @@ stream double (i64, i64) -> (bool, i64) {
         multiplier = multiplier + 1;
     }
 
-    while true {
-        (false, -1) | out;
-    }
+    while true (false, -1) | out;
 }
 
 stream main (i32, &&char) -> i32 {
