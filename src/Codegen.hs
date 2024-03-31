@@ -13,6 +13,7 @@ import qualified Data.Map as Map
 import Data.Map(Map)
 import Data.Maybe (isNothing, isJust)
 import Text.Read (readMaybe)
+import Data.Char (ord)
 
 data Module = Module {
    constants :: ![(String, String)],
@@ -191,6 +192,8 @@ assemble (P.ConstString s) = do
       | c == '\r' = "\\0D"
       | otherwise = [c]
 
+assemble (P.ConstChar c) = pure (Types.Char, Inline (ord c))
+
 
 assemble (P.Negate t) = assembleBinaryOp [
     (Types.I64, "sub"),
@@ -317,7 +320,6 @@ assemble (P.Declare name typ val) = do
       case vass of
         Pipeline pn ln -> do
           modify $ declarePipeline name (Types.Pipeline pn vtyp) ln
-          modify $ addAssembly (T.pack "call void @printf(ptr @strdbg, i32 2)")
           return (vtyp, Dummy)
         _ -> declareAndStore vtyp vass
     (Just t, Nothing) -> do
@@ -513,7 +515,6 @@ assemble (P.Pipe what to) = do
 
     modify incrGlobal
     pipelineNumber <- gets global
-    modify $ addAssembly (T.pack "call void @printf(ptr @strdbg, i32 1)")
     let callList = Global ("pipeline_" ++ show pipelineNumber)
     -- Create a global call list. This is a constant that represents the order of the streams, together with addresses to the functions.
     modify $ addDeclaration (T.pack (show callList ++ " = internal constant [" ++ show (length boobies + 1) ++ " x %clt*] [" ++ formatCallList boobies ++ ", %clt* @const_copy]"))
