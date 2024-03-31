@@ -99,6 +99,7 @@ replaceType t (_, a) = (t, a)
 fArgs args = if not (null args) then (llvmType . head) args ++ concatMap ((", "++) . llvmType) (tail args) else ""
 concatWith delim args = if not (null args) then head args ++ concatMap (delim++) (tail args) else ""
 
+getStackPtr :: Int -> AsState Assembled
 getStackPtr v = do
   name <- gets (P.name . stream)
   n <- Referenced <$> nextNum
@@ -152,6 +153,14 @@ pipeToOut twhat aswhat = do
     lift $ Right (Types.Void, Dummy)
   else
     lift $ Left ("cannot output " ++ show twhat ++ " to " ++ show outType)
+
+allocateOnStack :: Types.Type -> AsState Int
+allocateOnStack t = do
+  l <- gets locals
+  localNumComb <- gets (length . localNumber)
+  modify $ declareVar "x" t
+  modify $ setLocals l -- kind of a hack to allocate memory on the stack without declaring the variable
+  return localNumComb
 
 assemble :: P.ASTNode -> AsState TAssembled
 assemble (P.ConstInt i) = pure (Types.I64, Inline i)
@@ -226,6 +235,7 @@ assemble (P.Declare name typ val) = do
       case vass of
         Pipeline pn ln -> do
           modify $ declarePipeline name (Types.Pipeline pn vtyp) ln
+          modify $ addAssembly (T.pack "call void @printf(ptr @strdbg, i32 2)")
           return (vtyp, Dummy)
         _ -> declareAndStore vtyp vass
     (Just t, Nothing) -> do
@@ -252,9 +262,7 @@ assemble (P.Identifier (v:attrs)) = do
 
   case typ_obj of
     Types.Variable t -> do
-      ptr <- Referenced <$> nextNum
-      modify $ addAssembly (getVarPtr name ptr val)
-
+      ptr <- getStackPtr val
       (typ, ptr) <- loadIfNeeded t ptr
 
       foldM getAttribute (typ, ptr) attrs
@@ -264,7 +272,6 @@ assemble (P.Identifier (v:attrs)) = do
     _ -> lift $ Left (v ++ " is not a variable")
 
   where
-    getVarPtr name n v = T.pack (show n ++ " = getelementptr %stream_" ++ name ++ "_locals, ptr %locals, i32 0, i32 " ++ show v)
     load n ptr t = T.pack (show n ++ " = load " ++ llvmType t ++ ", ptr " ++ show ptr)
 
     loadIfNeeded typ ptr = do
@@ -380,16 +387,15 @@ assemble (P.Catch what) = do
   (twhat, aswhat) <- assemble what
   (retType, ref) <- case aswhat of
     Pipeline (-1) _ -> do
-      n <- Referenced <$> nextNum
+      name <- gets (P.name . stream)
+      let Types.PipelineT _ t = twhat
+      -- allocate return object
+      n <- allocateOnStack t >>= getStackPtr
       n2 <- Referenced <$> nextNum
       n3 <- Referenced <$> nextNum
       n4 <- Referenced <$> nextNum
       n5 <- Referenced <$> nextNum
       n6 <- Referenced <$> nextNum
-      name <- gets (P.name . stream)
-      let Types.PipelineT _ t = twhat
-      -- allocate return object
-      modify $ addAssembly (T.pack (show n ++ " = alloca " ++ llvmType t))
       -- get their locals
       modify $ addAssembly (T.pack (show n2 ++ " = getelementptr %stream_" ++ name ++ "_locals, ptr %locals, i32 1"))
       -- get next call
@@ -414,8 +420,7 @@ assemble (P.Catch what) = do
       funcPtr <- Referenced <$> nextNum
       modify $ addAssembly (T.pack (show funcPtr ++ " = load ptr, ptr @pipeline_"++show pn))
       -- allocate return object
-      n <- Referenced <$> nextNum
-      modify $ addAssembly (T.pack (show n ++ " = alloca " ++ llvmType t))
+      n <- allocateOnStack t >>= getStackPtr
 
       stack <- getStackPtr ln
 
@@ -468,6 +473,7 @@ assemble (P.Pipe what to) = do
 
     modify incrGlobal
     pipelineNumber <- gets global
+    modify $ addAssembly (T.pack "call void @printf(ptr @strdbg, i32 1)")
     let callList = Global ("pipeline_" ++ show pipelineNumber)
     -- Create a global call list. This is a constant that represents the order of the streams, together with addresses to the functions.
     modify $ addDeclaration (T.pack (show callList ++ " = internal constant [" ++ show (length boobies + 1) ++ " x %clt*] [" ++ formatCallList boobies ++ ", %clt* @const_copy]"))
@@ -481,11 +487,7 @@ assemble (P.Pipe what to) = do
     -- Create a combined type with the pipeline's blocks for ease of use
     modify $ addDeclaration (T.pack (llvmType combType ++ " = type { " ++ llvmType stackType ++ ", [" ++ show (length boobies + 1) ++ " x i8*] }"))
 
-    l <- gets locals
-    modify $ declareVar "pipeline" combType
-    localNumComb <- gets ((\x -> x-1) . length . localNumber)
-    modify $ setLocals l -- kind of a hack to allocate memory on the stack without declaring the variable
-
+    localNumComb <- allocateOnStack combType
     -- init blocks
     combPtr <- getStackPtr localNumComb
     blockPtr <- Referenced <$> nextNum
@@ -512,6 +514,7 @@ assemble (P.Pipe what to) = do
       modify $ addAssembly (T.pack ("store " ++ llvmType tinput ++ " " ++ show vinput ++ ", ptr " ++ show inputPtr))
     else do
       modify $ addAssembly (T.pack ("call void @llvm.memcpy.p0.p0.i32(ptr " ++ show inputPtr ++ ", ptr " ++ show vinput ++ ", i32 " ++ show inputSize ++ ", i1 0)"))
+
 
     if toOut then
       lift $ Left "pipeline into out not impl"
@@ -575,8 +578,7 @@ assemble (P.Cast typ val) = do
 assemble (P.MakeTuple vals) = do
   assembled <- mapM assemble vals
   let t = Types.Tuple (map fst assembled)
-  ref <- Referenced <$> nextNum
-  modify $ addAssembly (T.pack (show ref ++ " = alloca " ++ llvmType t))
+  ref <- allocateOnStack t >>= getStackPtr
   foldM_ (ptrAndStore t ref) 0 assembled
   return (t, ref)
 
