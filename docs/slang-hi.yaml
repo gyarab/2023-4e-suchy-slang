@@ -1,0 +1,141 @@
+%YAML 1.2
+---
+name: Slang
+file_extensions: [slg]
+scope: source.slg
+
+contexts:
+  main:
+    - include: comments
+    - match: \b(if|else|while|stream|catch|let|as|extern|fn)\b
+      scope: keyword.control.c
+    - match: \b(in|out)\b
+      scope: constant.character.escape.c
+    - match: '"'
+      push: string
+    - match: "'"
+      push: char
+    - match: (\b\d+(?:\.\d+)?|\.\d+)
+      scope: constant.numeric.value.c
+    - match: \b(bool|char|i32|i64|float|void)\b
+      scope: storage.type.c
+    - match: '\b(true|false)\b'
+      scope: constant.language.c
+    - include: operators
+
+  char:
+    - meta_scope: string.quoted.single.c
+    - match: \\.
+      scope: constant.character.escape.c
+    - match: "'"
+      pop: true
+
+  string:
+    - meta_scope: string.quoted.double.c
+    - match: \\.
+      scope: constant.character.escape.c
+    - match: '"'
+      pop: true
+
+  # from https://github.com/sublimehq/Packages/blob/master/C++/C.sublime-syntax
+  comments:
+    - include: block-comments
+    - include: line-comments
+
+  block-comments:
+    - match: ^(/\*) =\s*(.*?)\s*= (\*/)$\n?
+      scope: comment.block.banner.c
+      captures:
+        1: punctuation.definition.comment.begin.c
+        2: meta.toc-list.banner.block.c
+        3: punctuation.definition.comment.end.c
+    # empty block comments
+    - match: /\*\*+/
+      scope: comment.block.empty.c punctuation.definition.comment.c
+    # documentation block comments
+    - match: (?:/\*!|/\*{2,})
+      scope: punctuation.definition.comment.begin.c
+      push: block-comment-documentation-body
+    # normal block comments
+    - match: /\*
+      scope: punctuation.definition.comment.begin.c
+      push: block-comment-body
+    # stray block comment end
+    - match: \*+/(?!\*)
+      scope: invalid.illegal.stray-comment-end.c
+
+  block-comment-documentation-body:
+    - meta_include_prototype: false
+    - meta_scope: comment.block.documentation.c
+    - match: \*+/
+      scope: punctuation.definition.comment.end.c
+      pop: true
+    - match: ^\s*(\*)(?!\**/)
+      captures:
+        1: punctuation.definition.comment.c
+
+  block-comment-body:
+    - meta_include_prototype: false
+    - meta_scope: comment.block.c
+    - match: \*/
+      scope: punctuation.definition.comment.end.c
+      pop: true
+    - match: ^\s*(\*)(?!\**/)
+      captures:
+        1: punctuation.definition.comment.c
+
+  line-comments:
+    - match: ^(//) =\s*(.*?)\s*=\s*$\n?
+      scope: comment.line.banner.c
+      captures:
+        1: punctuation.definition.comment.c
+        2: meta.toc-list.banner.line.c
+    - match: //(?:!|/(?!/))
+      scope: punctuation.definition.comment.c
+      push: line-comment-documentation-body
+    - match: //+
+      scope: punctuation.definition.comment.c
+      push: line-comment-body
+
+  line-comment-body:
+    - meta_include_prototype: false
+    - meta_scope: comment.line.double-slash.c
+    - include: line-comment-end
+
+  line-comment-documentation-body:
+    - meta_include_prototype: false
+    - meta_scope: comment.line.documentation.c
+    - include: line-comment-end
+
+  line-comment-end:
+    - match: (?:(//+)\s*)?$\n?
+      captures:
+        1: punctuation.definition.comment.c
+      pop: 1
+    - match: (\\)$\n?
+      captures:
+        1: punctuation.separator.continuation.c
+
+  operators:
+    - match: (?:\+\+|--)
+      scope: keyword.operator.arithmetic.c
+    - match: '->'
+      scope: punctuation.accessor.c
+    - match: \+\=|-\=|\*\=|/\=|%\=|&\=|\|\=|\^\=|>>\=|<<\=
+      scope: keyword.operator.assignment.augmented.c
+    - match: <<|>>|&&|\|\|
+      scope: keyword.operator.arithmetic.c
+    - match: <\=|>\=|\=\=|<|>|\!\=
+      scope: keyword.operator.comparison.c
+    - match: \+|\-|/|%|\||\^|~|!
+      scope: keyword.operator.arithmetic.c
+    # These two operator can be both arithmetic and pointer/address related
+    - match: \*|&
+      scope: keyword.operator.c
+    - match: \=
+      scope: keyword.operator.assignment.c
+    # Negative lookahead prevents match :: when included in C++
+    - match: '\?|:(?!:)'
+      scope: keyword.operator.ternary.c
+    - match: '\.\.\.'
+      scope: keyword.operator.variadic.c
