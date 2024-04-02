@@ -1,0 +1,23 @@
+ extern fn printf
+        (&char, ...) -> i32;stream
+     delitele i64 -> i64{let n = ///
+    catch in;let i = 2;while i*i <= n
+   {if n/i*i              == n {i|out;
+  }i = i + 1;               }n | out; }
+  stream pcsl                () -> i64{
+  let i = 2;//
+   while true {let
+    d = catch i | delitele
+      ;if d == i { i | out; } i=
+         i + 1; } } stream main (
+             i32, &&char) -> i32 { //
+                    let p = () | pcsl;
+                          let x = 1;/**/
+ while x <=                  1000000 {//
+x = catch p;                printf("%d\n",
+ x); }  0 as                i32 | out;}/*
+  ==============-:......:=============.
+    =%   Programovaci jazyk Slang  %=
+      .=#       Adam Suchý       #=.
+         .:=*#%%   4  E   %%#+=:
+                 .......*/
