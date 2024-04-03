@@ -16,7 +16,8 @@ module Lexer (
   pChar,
   unChar,
   pBoolean,
-  unBoolean
+  unBoolean,
+  space
 ) where
 
 import Common

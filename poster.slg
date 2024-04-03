@@ -1,4 +1,4 @@
- extern fn printf
+             extern fn printf
         (&char, ...) -> i32;stream
      delitele i64 -> i64{let n = ///
     catch in;let i = 2;while i*i <= n

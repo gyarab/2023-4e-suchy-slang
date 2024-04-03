@@ -78,7 +78,7 @@ separatedBy pb pa = (:) <$> pa <*> many (pb *> pa)
 
 -- Main parser. Expects a whole module as input.
 pModule :: Parser [ASTNode]
-pModule = many (pStream <|> pExtern <|> pStruct)
+pModule = L.space >> many (pStream <|> pExtern <|> pStruct)
 
 pStream :: Parser ASTNode
 pStream = do
