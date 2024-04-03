@@ -24,4 +24,15 @@ Usage: slangc [OPTION]... [-o OUTPUT_FILE] SOURCE_FILE...
   -S               Print LLVM code instead of compiling it
 ```
 
+Je možné, že program nebude možné nalinkovat. V tom případě vytvbořte soubor `.o` pomocí spínače `-L` a
+spusťte linker sami. Například takto:
+```bash
+ld\
+ -dynamic-linker /lib64/ld-linux-x86-64.so.2\
+ /usr/lib/x86_64-linux-gnu/crt1.o /usr/lib/x86_64-linux-gnu/crti.o\
+ <soubor.o>\
+ /usr/lib/x86_64-linux-gnu/crtn.o\
+ -lc
+```
+
 Pomocí `slangc` můžete zkompilovat například ukázky v `examples/`, nebo `poster.slg`.
