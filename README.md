@@ -12,6 +12,10 @@
 5. Spusťte pomocí `./slangc`
 
 ### Použití
+
+ - Závislosti: llvm překladač - llc
+ - Závislosti pro linkování: llvm linker - ld.lld, glibc - crt1.o crti.o crtn.o a libc
+
 ```
 $ ./slangc
 Usage: slangc [OPTION]... [-o OUTPUT_FILE] SOURCE_FILE...
