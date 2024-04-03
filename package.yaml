@@ -1,4 +1,4 @@
-name: slang
+name: slangc
 version: 0.1.0
 homepage: https://github.com/gyarab/2023-4e-suchy-slang#readme
 license: MIT
@@ -13,6 +13,9 @@ dependencies:
   - parser-combinators
   - text
   - mtl
+  - process
+  - temporary
+  - ordered-containers
 
 executable:
   source-dirs: src
