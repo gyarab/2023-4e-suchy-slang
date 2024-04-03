@@ -52,7 +52,7 @@ main = do
 
     withSystemTempFile "slang" $ \fp h -> do
         let out = if link pa then fp else outputFile pa
-        let prc = proc "llc" [opt pa, "-filetype=obj", "-o", out, "-"]
+        let prc = proc "llc" [opt pa, "-filetype=obj", "-opaque-pointers", "-o", out, "-"]
 
         when (verbose pa) $ do
             putStrLn ("verbose: llc command: " ++ show (cmdspec prc))
@@ -99,6 +99,13 @@ parseArgs ("-O0":xs) = setOpt "-O0" xs
 parseArgs ("-O1":xs) = setOpt "-O1" xs
 parseArgs ("-O2":xs) = setOpt "-O2" xs
 parseArgs ("-O3":xs) = setOpt "-O3" xs
+
+parseArgs ("-L":xs) = do
+    pa <- parseArgs xs
+    return pa{link = False}
+parseArgs ("--no-link":xs) = do
+    pa <- parseArgs xs
+    return pa{link = False}
 
 parseArgs ("-o":f:sources) = do
     pa <- parseArgs sources
