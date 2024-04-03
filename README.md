@@ -3,7 +3,7 @@
 > Slang je víceúčelový programovací jazyk založený na principu datových proudů.
 > V této práci jsem definoval jeho syntaxi a naprogramoval překladač do LLVM IR.
 
-# Kompilace
+### Kompilace
 
 1. Nainstalujte Haskell Stack - https://docs.haskellstack.org/en/stable/ (`curl -sSL https://get.haskellstack.org/ | sh`)
 2. Naklonujte repozitář
@@ -11,7 +11,7 @@
 4. Zkopírujte zkompilovaný překladač do pracovního adresáře (`cp $(stack path --local-install-root)/bin/slangc .`)
 5. Spusťte pomocí `./slangc`
 
-# Použití
+### Použití
 ```
 $ ./slangc
 Usage: slangc [OPTION]... [-o OUTPUT_FILE] SOURCE_FILE...
