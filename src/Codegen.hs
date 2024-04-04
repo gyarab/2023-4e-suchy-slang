@@ -230,6 +230,14 @@ assemble (P.Divide l r) = assembleBinaryOp [
     (Types.Boolean, "sdiv"),
     (Types.Float, "fdiv")
   ] l r
+assemble (P.Modulo l r) = assembleBinaryOp [
+    (Types.I64, "srem"),
+    (Types.I32, "srem"),
+    (Types.Char, "srem"),
+    (Types.Boolean, "srem"),
+    (Types.Float, "frem")
+  ] l r
+
 
 assemble (P.Eq l r) = replaceType Types.Boolean <$> assembleBinaryOp [
     (Types.I64, "icmp eq"),
@@ -502,7 +510,7 @@ assemble (P.Pipe what to) = do
 
   let (input:pipeline) = reverse (if toOut then calls else to:calls)
 
-  boobies <- mapM checkStream pipeline
+  boobies <- mapM checkStream (reverse pipeline)
 
   if null boobies then do
     (twhat, awhat) <- assemble input

@@ -78,6 +78,7 @@ data LToken
   | Sub
   | Mult
   | Div
+  | Mod
 
   | Arrow
 
@@ -164,6 +165,7 @@ pToken Add = Add <$ symbol "+"
 pToken Sub = Sub <$ symbol "-"
 pToken Mult = Mult <$ symbol "*"
 pToken Div = Div <$ symbol "/"
+pToken Mod = Mod <$ symbol "%"
 
 pToken Arrow = Arrow <$ symbol "->"
 

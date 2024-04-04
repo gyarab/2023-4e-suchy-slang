@@ -27,6 +27,7 @@ data ASTNode
   | Subtract !ASTNode !ASTNode
   | Multiply !ASTNode !ASTNode
   | Divide !ASTNode !ASTNode
+  | Modulo !ASTNode !ASTNode
   | Lsr !ASTNode !ASTNode
   | Gtr !ASTNode !ASTNode
   | Eq !ASTNode !ASTNode
@@ -281,7 +282,8 @@ table =
     [ Postfix (Cast <$> pCast)
     ],
     [ InfixL (Multiply <$ pToken L.Mult),
-      InfixL (Divide <$ pToken L.Div)
+      InfixL (Divide <$ pToken L.Div),
+      InfixL (Modulo <$ pToken L.Mod)
     ],
     [ InfixL (Add <$ pToken L.Add),
       InfixL (Subtract <$ pToken L.Sub)
