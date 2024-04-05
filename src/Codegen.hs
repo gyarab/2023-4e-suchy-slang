@@ -433,74 +433,7 @@ assemble (P.Dereference times val) = do
         _ -> lift $ Left ("cannot dereference " ++ show typ)
 
 
-assemble (P.Catch what) = do
-  (twhat, aswhat) <- assemble what
-  (retType, ref) <- case aswhat of
-    Pipeline (-1) _ -> do
-      name <- gets (P.name . stream)
-      let Types.PipelineT _ t = twhat
-      -- allocate return object
-      n <- allocateOnStack t >>= getStackPtr
-      n2 <- Referenced <$> nextNum
-      n3 <- Referenced <$> nextNum
-      n4 <- Referenced <$> nextNum
-      n5 <- Referenced <$> nextNum
-      n6 <- Referenced <$> nextNum
-      -- get their locals
-      modify $ addAssembly (T.pack (show n2 ++ " = getelementptr %stream_" ++ name ++ "_locals, ptr %locals, i32 1"))
-      -- get next call
-      modify $ addAssembly (T.pack (show n3 ++ " = getelementptr %clt, ptr %call_list, i32 1"))
-      -- get next block
-      modify $ addAssembly (T.pack (show n4 ++ " = getelementptr i8*, i8** %block, i32 1"))
-      -- load this call
-      modify $ addAssembly (T.pack (show n5 ++ " = load ptr, ptr %call_list"))
-      -- call next in pipeline
-      modify $ addAssembly (T.pack (show n6 ++ " = call i1 " ++ show n5 ++ "(ptr " ++ show n2 ++ ", ptr " ++ show n ++ ", ptr " ++ show n3 ++ ", ptr " ++ show n4 ++ ")"))
-      -- if the stream did not return anything, do not return anything as well
-      modify incrLabel
-      l <- gets labelN
-      modify $ addAssembly (T.pack ("br i1 " ++ show n6 ++ ", label %lbl" ++ show l ++ ", label %.blockblocked"))
-      modify $ addAssembly (T.pack ("lbl" ++ show l ++ ":"))
-      return (t, n)
-
-    Pipeline pn ln -> do
-      let Types.PipelineT _ t = twhat
-      let combType = Types.StructureStub ("%pipeline_" ++ show pn ++ "_stack_comb")
-
-      funcPtr <- Referenced <$> nextNum
-      modify $ addAssembly (T.pack (show funcPtr ++ " = load ptr, ptr @pipeline_"++show pn))
-      -- allocate return object
-      n <- allocateOnStack t >>= getStackPtr
-
-      stack <- getStackPtr ln
-
-      blockPtr <- Referenced <$> nextNum
-      modify $ addAssembly (T.pack (show blockPtr ++ " = getelementptr " ++ llvmType combType ++ ", ptr " ++ show stack ++ ", i32 0, i32 1"))
-
-      -- get next call
-      nxtCall <- Referenced <$> nextNum
-      modify $ addAssembly (T.pack (show nxtCall ++ " = getelementptr %clt, %clt* @pipeline_" ++ show pn ++ ", i32 1"))
-
-      retVal <- Referenced <$> nextNum
-      modify $ addAssembly (T.pack (show retVal ++ " = call i1 " ++ show funcPtr ++ "(ptr " ++ show stack ++ ", ptr " ++ show n ++ ", ptr " ++ show nxtCall ++ ", ptr " ++ show blockPtr ++ ")"))
-
-      modify incrLabel
-      l <- gets labelN
-      modify $ addAssembly (T.pack ("br i1 " ++ show retVal ++ ", label %lbl" ++ show l ++ ", label %.blockblocked"))
-      modify $ addAssembly (T.pack ("lbl" ++ show l ++ ":"))
-
-      return (t, n)
-      
-    d -> lift $ Left ("can only catch pipelines, but got " ++ show d)
-
-
-  if Types.isFirstClass retType then do
-    n <- Referenced <$> nextNum
-    modify $ addAssembly (T.pack (show n ++ " = load " ++ llvmType retType ++ ", ptr " ++ show ref))
-    return (retType, n)
-  else
-    return (retType, ref)
-
+assemble (P.Catch p) = assembleCatch ".blockblocked" (P.Catch p)
 
 assemble (P.Pipe what to) = do
   let calls = collapse what
@@ -646,6 +579,46 @@ assemble (P.Reference times val) =
     P.Identifier {} -> assembleIdentifier True val
     P.Index {} -> assembleIndex True val
     _ -> lift $ Left "can only reference indexed vars or identifiers"
+
+assemble (P.IfLet name pipeline action elseAction) = do
+  case pipeline of
+    P.Catch {} -> return ()
+    _ -> lift $ Left "if let is defined only on pipeline catching"
+
+  modify incrLabel
+  elseOrEndLabelN <- gets labelN
+
+  -- assemble the catch but do not block ourselves
+  (tcatch, asscatch) <- assembleCatch ("lbl"++show elseOrEndLabelN) pipeline
+  
+  locals <- gets locals
+  declareAndStore tcatch asscatch
+  assembleBlock action
+  modify (setLocals locals) -- the variable is only defined inside the block
+
+  case elseAction of
+    Just actions -> do
+      modify incrLabel
+      endLabelN <- gets labelN
+      -- skip else block if we're coming from the if block
+      modify $ addAssembly (T.pack ("br label %lbl" ++ show endLabelN))
+
+      modify $ addAssembly (T.pack ("lbl" ++ show elseOrEndLabelN ++ ":"))
+      assembleBlock actions
+      modify $ addAssembly (T.pack ("br label %lbl" ++ show endLabelN))
+      modify $ addAssembly (T.pack ("lbl" ++ show endLabelN ++ ":"))
+    Nothing -> do
+      modify $ addAssembly (T.pack ("lbl" ++ show elseOrEndLabelN ++ ":"))
+
+  return (Types.Void, Dummy)
+
+  where
+    declareAndStore typ ass = do
+      modify $ declareVar name typ
+      ref <- gets (length . localNumber)
+      n <- getStackPtr (ref-1)
+      store typ ass n
+      return (typ, Dummy)
     
 assembleIdentifier :: Bool -> P.ASTNode -> AsState TAssembled
 assembleIdentifier forceNoLoad (P.Identifier (v:attrs)) = do
@@ -691,9 +664,78 @@ assembleIndex forceNoLoad (P.Index idx val) = do
     Nothing -> lift $ Left ("indexed value must be ptr (got " ++ show tval ++ ")")
   
   n <- Referenced <$> nextNum
-  modify $ addAssembly (T.pack (show n ++ " = getelementptr " ++ llvmType tval ++ ", ptr " ++ show asval ++ ", i32 " ++ show asidx))
+  modify $ addAssembly (T.pack (show n ++ " = getelementptr " ++ llvmType t ++ ", ptr " ++ show asval ++ ", i32 " ++ show asidx))
 
   if forceNoLoad then return (Types.ref t, n) else loadIfNeeded t n
+
+
+assembleCatch jumpOnFail (P.Catch what) = do
+  (twhat, aswhat) <- assemble what
+  (retType, ref) <- case aswhat of
+    Pipeline (-1) _ -> do
+      name <- gets (P.name . stream)
+      let Types.PipelineT _ t = twhat
+      -- allocate return object
+      n <- allocateOnStack t >>= getStackPtr
+      n2 <- Referenced <$> nextNum
+      n3 <- Referenced <$> nextNum
+      n4 <- Referenced <$> nextNum
+      n5 <- Referenced <$> nextNum
+      n6 <- Referenced <$> nextNum
+      -- get their locals
+      modify $ addAssembly (T.pack (show n2 ++ " = getelementptr %stream_" ++ name ++ "_locals, ptr %locals, i32 1"))
+      -- get next call
+      modify $ addAssembly (T.pack (show n3 ++ " = getelementptr %clt, ptr %call_list, i32 1"))
+      -- get next block
+      modify $ addAssembly (T.pack (show n4 ++ " = getelementptr i8*, i8** %block, i32 1"))
+      -- load this call
+      modify $ addAssembly (T.pack (show n5 ++ " = load ptr, ptr %call_list"))
+      -- call next in pipeline
+      modify $ addAssembly (T.pack (show n6 ++ " = call i1 " ++ show n5 ++ "(ptr " ++ show n2 ++ ", ptr " ++ show n ++ ", ptr " ++ show n3 ++ ", ptr " ++ show n4 ++ ")"))
+      -- if the stream did not return anything, do not return anything as well
+      modify incrLabel
+      l <- gets labelN
+      modify $ addAssembly (T.pack ("br i1 " ++ show n6 ++ ", label %lbl" ++ show l ++ ", label %" ++ jumpOnFail))
+      modify $ addAssembly (T.pack ("lbl" ++ show l ++ ":"))
+      return (t, n)
+
+    Pipeline pn ln -> do
+      let Types.PipelineT _ t = twhat
+      let combType = Types.StructureStub ("%pipeline_" ++ show pn ++ "_stack_comb")
+
+      funcPtr <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show funcPtr ++ " = load ptr, ptr @pipeline_"++show pn))
+      -- allocate return object
+      n <- allocateOnStack t >>= getStackPtr
+
+      stack <- getStackPtr ln
+
+      blockPtr <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show blockPtr ++ " = getelementptr " ++ llvmType combType ++ ", ptr " ++ show stack ++ ", i32 0, i32 1"))
+
+      -- get next call
+      nxtCall <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show nxtCall ++ " = getelementptr %clt, %clt* @pipeline_" ++ show pn ++ ", i32 1"))
+
+      retVal <- Referenced <$> nextNum
+      modify $ addAssembly (T.pack (show retVal ++ " = call i1 " ++ show funcPtr ++ "(ptr " ++ show stack ++ ", ptr " ++ show n ++ ", ptr " ++ show nxtCall ++ ", ptr " ++ show blockPtr ++ ")"))
+
+      modify incrLabel
+      l <- gets labelN
+      modify $ addAssembly (T.pack ("br i1 " ++ show retVal ++ ", label %lbl" ++ show l ++ ", label %" ++ jumpOnFail))
+      modify $ addAssembly (T.pack ("lbl" ++ show l ++ ":"))
+
+      return (t, n)
+      
+    d -> lift $ Left ("can only catch pipelines, but got " ++ show d)
+
+
+  if Types.isFirstClass retType then do
+    n <- Referenced <$> nextNum
+    modify $ addAssembly (T.pack (show n ++ " = load " ++ llvmType retType ++ ", ptr " ++ show ref))
+    return (retType, n)
+  else
+    return (retType, ref)
 
 assembleBlock :: [P.ASTNode] -> AsState TAssembled
 assembleBlock stmts = do
