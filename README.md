@@ -3,6 +3,10 @@
 > Slang je víceúčelový programovací jazyk založený na principu datových proudů.
 > V této práci jsem definoval jeho syntaxi a naprogramoval překladač do LLVM IR.
 
+### Vyzkoušení
+
+`slangc` je všem dostupný na SVS.
+
 ### Kompilace
 
 1. Nainstalujte Haskell Stack - https://docs.haskellstack.org/en/stable/ (`curl -sSL https://get.haskellstack.org/ | sh`)
