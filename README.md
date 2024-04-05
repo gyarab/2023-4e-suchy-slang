@@ -5,7 +5,7 @@
 
 ### Vyzkoušení
 
-`slangc` je všem dostupný na SVS.
+`slangc` je dostupný na SVS.
 
 ### Kompilace
 
