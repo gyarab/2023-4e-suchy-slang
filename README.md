@@ -14,7 +14,7 @@
 ### Použití
 
  - Závislosti: llvm překladač - llc
- - Závislosti pro linkování: llvm linker - ld.lld, glibc - crt1.o crti.o crtn.o a libc
+ - Závislosti pro linkování: gcc - zajištujě správnou konfiguraci `ld` a soubory `crt{1,i,n}.o`
 
 ```
 $ ./slangc

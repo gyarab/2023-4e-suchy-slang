@@ -52,7 +52,7 @@ main = do
 
     withSystemTempFile "slang" $ \fp h -> do
         let out = if link pa then fp else outputFile pa
-        let prc = proc "llc" [opt pa, "-filetype=obj", "-opaque-pointers", "-o", out, "-"]
+        let prc = proc "llc" [opt pa, "-filetype=obj", "-opaque-pointers", "-o", out, "--relocation-model=pic", "-"]
 
         when (verbose pa) $ do
             putStrLn ("verbose: llc command: " ++ show (cmdspec prc))
@@ -64,10 +64,10 @@ main = do
         when (exit /= ExitSuccess) $ exitWith (ExitFailure 1)
 
         when (link pa) $ do
-            let args = ["-o", outputFile pa, "-dynamic-linker", "/lib64/ld-linux-x86-64.so.2", "/lib/crt1.o", "/lib/crti.o", fp, "/lib/crtn.o", "-L", "/lib", "-lc"]
+            let args = ["-o", outputFile pa, fp]
             when (verbose pa) $ do
-                putStrLn ("verbose: ld.lld arguments: " ++ show args)
-            callProcess "ld.lld" args
+                putStrLn ("verbose: gcc arguments: " ++ show args)
+            callProcess "gcc" args
 
     where
         dedupe types node = do
