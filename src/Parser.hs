@@ -73,6 +73,7 @@ data ASTNode
   | MakeTuple ![ASTNode]
   | Index !ASTNode !ASTNode
   | IfLet !String !ASTNode ![ASTNode] !(Maybe [ASTNode]) -- identifier, val, action, else
+  | WhileLet !String !ASTNode ![ASTNode] -- identifier, val, loop
   deriving (Eq, Ord, Show)
 
 separatedBy :: Parser b -> Parser a -> Parser [a]
@@ -181,6 +182,7 @@ pStatement =
     [ pLetStatement,
       try pIfLetStatement,
       pIfElseStatement,
+      try pWhileLetStatement,
       pWhileStatement,
       pExpression <* pToken L.Semicolon
     ]
@@ -237,6 +239,26 @@ pIfLetStatement = do
     pBlock <|> ((: []) <$> pStatement)
 
   return (IfLet ident ex action elseAction)
+
+
+pWhileLetStatement :: Parser ASTNode
+pWhileLetStatement = do
+  void $ pToken L.While
+  void $ pToken L.Let
+
+  ident <- pIdentifierSingle
+
+  iType <- optional . try $ do
+    void $ pToken L.Colon
+    pType
+
+  void $ pToken L.Assign
+
+  ex <- pExpression
+
+  action <- pBlock <|> ((: []) <$> pStatement)
+
+  return (WhileLet ident ex action)
 
 
 pWhileStatement :: Parser ASTNode

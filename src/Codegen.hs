@@ -147,7 +147,7 @@ pipeToOut twhat aswhat = do
     if Types.isFirstClass twhat then do
       modify $ addAssembly (T.pack ("store " ++ llvmType twhat ++ " " ++ show aswhat ++ ", ptr %return_ptr"))
     else do
-      memCpy twhat aswhat (Raw "%return_ptr") 
+      memCpy twhat aswhat (Raw "%return_ptr")
     modify $ addAssembly (T.pack ("store i8* blockaddress(@stream_" ++ name ++ ", %.block" ++ show bn ++ "), i8** %block"))
     modify $ addAssembly (T.pack "ret i1 1")
     modify $ addAssembly (T.pack (".block" ++ show bn ++ ":"))
@@ -500,7 +500,7 @@ assemble (P.Pipe what to) = do
 
     if toOut then
       lift $ Left "pipeline into out not impl"
-    else 
+    else
       let (Types.Stream inT _) = snd . head $ boobies
           (Types.Stream _ outT) = snd . last $ boobies
           in return (Types.PipelineT inT outT, Pipeline pipelineNumber localNumComb)
@@ -590,7 +590,7 @@ assemble (P.IfLet name pipeline action elseAction) = do
 
   -- assemble the catch but do not block ourselves
   (tcatch, asscatch) <- assembleCatch ("lbl"++show elseOrEndLabelN) pipeline
-  
+
   locals <- gets locals
   declareAndStore tcatch asscatch
   assembleBlock action
@@ -619,7 +619,43 @@ assemble (P.IfLet name pipeline action elseAction) = do
       n <- getStackPtr (ref-1)
       store typ ass n
       return (typ, Dummy)
-    
+
+assemble (P.WhileLet name pipeline loop) = do
+  case pipeline of
+    P.Catch {} -> return ()
+    _ -> lift $ Left "while let is defined only on pipeline catching"
+
+  modify (incrLabel . incrLabel)
+  label <- gets labelN
+
+
+  modify $ addAssembly (T.pack ("br label %lbl" ++ show (label - 1)))
+  modify $ addAssembly (T.pack ("lbl" ++ show (label - 1) ++ ":"))
+
+  -- jump to the end of the loop if the catch fails
+  (tcatch, asscatch) <- assembleCatch ("lbl"++show label) pipeline
+
+  -- main loop body
+  locals <- gets locals
+  declareAndStore tcatch asscatch
+  assembleBlock loop
+  modify (setLocals locals) -- the variable is only defined inside the block
+
+  -- loop back up
+  modify $ addAssembly (T.pack ("br label %lbl" ++ show (label - 1)))
+
+  modify $ addAssembly (T.pack ("lbl" ++ show label ++ ":"))
+
+  return (Types.Void, Dummy)
+
+  where
+    declareAndStore typ ass = do
+      modify $ declareVar name typ
+      ref <- gets (length . localNumber)
+      n <- getStackPtr (ref-1)
+      store typ ass n
+      return (typ, Dummy)
+
 assembleIdentifier :: Bool -> P.ASTNode -> AsState TAssembled
 assembleIdentifier forceNoLoad (P.Identifier (v:attrs)) = do
   name <- gets (P.name . stream)
@@ -662,7 +698,7 @@ assembleIndex forceNoLoad (P.Index idx val) = do
   t <- case Types.deref tval of
     Just v -> return v
     Nothing -> lift $ Left ("indexed value must be ptr (got " ++ show tval ++ ")")
-  
+
   n <- Referenced <$> nextNum
   modify $ addAssembly (T.pack (show n ++ " = getelementptr " ++ llvmType t ++ ", ptr " ++ show asval ++ ", i32 " ++ show asidx))
 
@@ -726,7 +762,7 @@ assembleCatch jumpOnFail (P.Catch what) = do
       modify $ addAssembly (T.pack ("lbl" ++ show l ++ ":"))
 
       return (t, n)
-      
+
     d -> lift $ Left ("can only catch pipelines, but got " ++ show d)
 
 
