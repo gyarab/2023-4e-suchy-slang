@@ -608,6 +608,7 @@ assemble (P.IfLet name pipeline action elseAction) = do
       modify $ addAssembly (T.pack ("br label %lbl" ++ show endLabelN))
       modify $ addAssembly (T.pack ("lbl" ++ show endLabelN ++ ":"))
     Nothing -> do
+      modify $ addAssembly (T.pack ("br label %lbl" ++ show elseOrEndLabelN))
       modify $ addAssembly (T.pack ("lbl" ++ show elseOrEndLabelN ++ ":"))
 
   return (Types.Void, Dummy)
