@@ -15,7 +15,7 @@ import qualified Data.Map.Ordered as OMap
 import qualified Data.Map as Map
 import System.Exit (exitWith, ExitCode (ExitFailure, ExitSuccess), exitSuccess, exitFailure)
 import System.Environment (getArgs, getProgName)
-import System.Process (createProcess, proc, CreateProcess (std_out, std_in, cmdspec), StdStream (UseHandle, CreatePipe), callProcess, waitForProcess)
+import System.Process (createProcess, proc, CreateProcess (std_out, std_in, cmdspec), StdStream (UseHandle, CreatePipe), callProcess, waitForProcess, readProcess)
 import System.IO (openTempFile, hPutStr, hClose)
 import System.IO.Temp (withSystemTempFile)
 
@@ -52,7 +52,8 @@ main = do
 
     withSystemTempFile "slang" $ \fp h -> do
         let out = if link pa then fp else outputFile pa
-        let prc = proc "llc" [opt pa, "-filetype=obj", "-opaque-pointers", "-o", out, "--relocation-model=pic", "-"]
+        llvmVersion <- getLLVMVersion
+        let prc = proc "llc" (["-opaque-pointers" | llvmVersion <= 16] ++ [opt pa, "-filetype=obj", "-o", out, "--relocation-model=pic", "-"])
 
         when (verbose pa) $ do
             putStrLn ("verbose: llc command: " ++ show (cmdspec prc))
@@ -132,3 +133,7 @@ showVersion = putStrLn "slangc v1.0.0" >> exitSuccess
 setOpt lvl xs = do
     pa <- parseArgs xs
     return pa{opt=lvl}
+
+getLLVMVersion = do
+    llvmVersion <- readProcess "llvm-config" ["--version"] []
+    return (read . takeWhile (/= '.') $ llvmVersion :: Integer)
