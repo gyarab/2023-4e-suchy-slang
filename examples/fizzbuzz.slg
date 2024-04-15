@@ -1,0 +1,24 @@
+extern fn printf (&char, ...) -> i32;
+
+stream nums () -> i64 {
+    let a = 0;
+    while true { (a = a + 1) | out; }
+}
+stream fizzbuzz i64 -> (&char, i64) {
+    let i = catch in;
+    let c: &char;
+    if i % 15 == 0 { c = "FizzBuzz\n"; }
+    else if i % 3 == 0 { c = "Fizz\n"; }
+    else if i % 5 == 0 { c = "Buzz\n"; }
+    else { c = "%ld\n"; }
+    (c, i) | out;
+}
+stream print (&char, i64) -> () {
+    let i = catch in;
+    printf(i.0, i.1);
+}
+
+stream main (i32, &&char) -> i32 {
+    catch () | nums | fizzbuzz | print;
+}
+
