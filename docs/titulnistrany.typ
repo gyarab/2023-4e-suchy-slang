@@ -89,4 +89,12 @@
   V této práci jsem definoval jeho syntaxi a naprogramoval překladač do LLVM IR.
   Dále vysvětluji postup, jak překladač funguje a jak by vývoj Slangu mohl
   pokračovat.
+
+  #v(2em)
+  #text(size: 16pt)[ *Abstract* ]
+  #v(1em)
+
+  Slang is a general purpose programming language with first-class support for data streams.
+  In this work I define it's syntax and build a compiler into LLVM IR. Additionally,
+  I explain how the compiler works and how its future developement could look like.
 ]
