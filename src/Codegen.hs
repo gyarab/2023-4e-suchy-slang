@@ -373,6 +373,17 @@ assemble (P.Assign (P.Identifier (var:_)) val) = do
   where
     getPtr name n v = T.pack (show (Referenced n) ++ " = getelementptr %stream_"++name++"_locals, ptr %locals, i32 0, i32 " ++ show v)
 
+assemble (P.Assign (P.Index x y) val) = do
+  (idxTyp, idxAss) <- assembleIndex True (P.Index x y) 
+
+  (valTyp, valAss) <- assemble val
+
+  forceSameType idxTyp (Types.ref valTyp) <?> ("cannot assign " ++ show valTyp ++ " to " ++ show idxTyp)
+
+  store valTyp valAss idxAss
+
+  return (valTyp, valAss)
+
 assemble (P.IfElse cond a b) = do
   (tcond, ascond) <- assemble cond
 
